@@ -115,91 +115,92 @@ def savecode(code,MA5,MA20,LB,UB,cprice,volume,VMA5):    #儲存公司股價資�
     # print(output[1])
     with open('list-'+str(datetime.date.today())+'.json','w') as load: #把資料寫入json檔
         json.dump(code_json,load)
-def print_result(collect,i):    #將資料輸出為txt
-    # print("公司代碼:"+str(collect[i]["code"]))
-    # print("MA5:"+str(collect[i]["MA5"]))
-    # print("MA20:"+str(collect[i]["MA20"]))
+def print_result(stock_data):    # 將資料輸出為txt (已重構)
+    """
+    接收單一股票的資料字典，判斷是否符合策略，
+    若符合則將結果寫入文字檔。
+    """
+    # 函式現在接收一個字典 (stock_data)，而不是列表和索引
     day = 0
-    for j in reversed(range(5)):      #
-            if collect[i]["MA5"][j]>collect[i]["MA20"][j]:
-                day += 1
-                continue
-            else:
-                break 
-    BBW1 = round((collect[i]["UB"][len(collect[i]["UB"])-1]-collect[i]["LB"][len(collect[i]["LB"])-1])/collect[i]["MA20"][len(collect[i]["MA20"])-1],2)
-    BBW2 = round((collect[i]["UB"][len(collect[i]["UB"])-1]/collect[i]["LB"][len(collect[i]["LB"])-1])-1,2)
-    if day>=2 and BBW2<0.1 and collect[i]["volume"][len(collect[i]["volume"])-1]>collect[i]["VMA5"][len(collect[i]["VMA5"])-1]:   #抓出符合選項的股票
-        f = open('company-'+str(datetime.date.today())+'.txt','a',encoding='utf8')
-        f.write("公司代碼:"+str(collect[i]["code"])+"\n")
-        f.write("今日收盤價"+str(collect[i]["cprice"][len(collect[i]["cprice"])-1])+"\n")
-        f.write("當前帶寬(上軌-下軌)/2:"+str(BBW1)+"\n")
-        f.write("當前帶寬(上軌/下軌)-1:"+str(BBW2)+"\n")
-        f.write("連續"+str(day)+"天五日線高於中線"+"\n")
-        f.write("日期:"+str(dateList)+"\n")
-        f.write("交易量"+str(collect[i]["volume"])+"\n")
-        f.write("交易量五日均線"+str(collect[i]["VMA5"])+"\n")
-        f.write("MA5:"+str(collect[i]["MA5"])+"\n")
-        f.write("MA20:"+str(collect[i]["MA20"])+"\n")
-        f.write("UB:"+str(collect[i]["UB"])+"\n")
-        f.write("LB:"+str(collect[i]["LB"])+"\n")
-        f.write("=====================================\n")
-        # print("公司代碼:"+str(collect[i]["code"]))
-        # print("連續"+str(day)+"天五日線高於中線")
-        # print("MA5:"+str(collect[i]["MA5"]))
-        # print("MA20:"+str(collect[i]["MA20"]))
-def getajaxdata(url,code):   #ajax模式
-    global MA5,MA20,UB,LB,codes,cprice,volume
-    #url = "https://www.ptt.cc/bbs/Gossiping/index.html"
-    #建立Request物件，附加 Request Headers 的資訊
-    while True:
-        try:
-            request = req.Request(url,headers={     #取得某些header取得讀取權限
-                "referer":"https://histock.tw/stock/tv/tvchart.aspx?no=2330",   
-                "cookie":"ASP.NET_SessionId=jtcjw5s2sev13qed0vw5o0tg; _ga=GA1.2.2114789011.1629736882; _gcl_au=1.1.140816943.1629736882; __gads=ID=99eff656639bfa08-227edbfb17cb0077:T=1629736889:RT=1629736889:S=ALNI_MYNcPmDzFVTtl1vR7NyZrrDqqaR7A; _fbp=fb.1.1629736883018.779705980; _gid=GA1.2.902996350.1629961090; _gat=1",
-                "User-agent":"Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Mobile Safari/537.36"
-            })
-            with req.urlopen(request) as response:
-                data = response.read().decode("utf-8")  #根據觀察 此處資料為 JSON 格式
-
-            #解析 JSON 格式資料,取得每則標題
-            data = json.loads(data) #把原始 JSON 資料解析成字典/列表的表示形式
-            #print(data)
-            day = 0
-            #取得 JSON 資料中的股價
-            if len(data) <= 5:
-                print(code)
-            if len(data) > 5:   #判斷裡面有沒有資料
-                h = data['h']   #股價每日高點
-                c = data['c']   #股價每日收盤價
-                l = data['l']   #股價每日低點
-                o = data['o']   #股價每日開盤
-                v = data['v']   #股市每日交易量
-                c1 = c[len(c)-5:len(c)]
-                v1 = v[len(v)-5:len(v)]
-                lock.acquire()
-                codes.append(code)
-                VMA5.append(vma5(v))
-                MA5.append(ma5(c))    #將五日均線回傳存入
-                MA20.append(ma20(c))  #將二十日均線回傳存入
-                UB.append(B_Band_UB(c))   #將布林軌道上軌回傳存入
-                LB.append(B_Band_LB(c))   #將布林軌道下軌回傳存入
-                cprice.append(c1)   #將收盤價回傳存入
-                volume.append(v1)   #將交易量回傳存入
-                lock.release()
-                # print(LB)
-                # for i in range(5):  #判斷當前五日均線是否高於二十日均線
-                #     if MA5[i]>MA20[i]:
-                #         day += 1
-                #         continue    #當前日期符合繼續迴圈
-                #     else:
-                #         break       #不符合跳出迴圈
-                # savecode(code,MA5,MA20,LB,UB) #把抓取的股價資料存入
-                time.sleep(1)   #待機
-                # return MA5[0]
-        except Exception as e:
-            print("錯誤原因:",e)
+    # 判斷趨勢: 連續幾天 MA5 > MA20
+    for j in reversed(range(5)):
+        if stock_data["MA5"][j] > stock_data["MA20"][j]:
+            day += 1
         else:
             break
+
+    # 計算布林帶寬指標
+    last_index = len(stock_data["UB"]) - 1
+    BBW1 = round((stock_data["UB"][last_index] - stock_data["LB"][last_index]) / stock_data["MA20"][last_index], 2)
+    BBW2 = round((stock_data["UB"][last_index] / stock_data["LB"][last_index]) - 1, 2)
+    
+    # 判斷成交量是否放大
+    volume_break = stock_data["volume"][last_index] > stock_data["VMA5"][last_index]
+
+    # 策略條件判斷
+    if day >= 2 and BBW2 < 0.1 and volume_break:
+        # 使用 'a' 模式 (append) 來追加內容到檔案中
+        with open(f'company-{datetime.date.today()}.txt', 'a', encoding='utf8') as f:
+            f.write(f"公司代碼: {stock_data['code']}\n")
+            f.write(f"今日收盤價: {stock_data['cprice'][last_index]}\n")
+            f.write(f"當前帶寬(上軌-下軌)/中線: {BBW1}\n")
+            f.write(f"當前帶寬(上軌/下軌)-1: {BBW2}\n")
+            f.write(f"連續 {day} 天五日線高於中線\n")
+            f.write(f"最近五日日期: {dateList}\n") # dateList 仍是全域變數
+            f.write(f"最近五日交易量: {stock_data['volume']}\n")
+            f.write(f"最近五日交易量均線: {stock_data['VMA5']}\n")
+            f.write(f"MA5: {stock_data['MA5']}\n")
+            f.write(f"MA20: {stock_data['MA20']}\n")
+            f.write(f"UB: {stock_data['UB']}\n")
+            f.write(f"LB: {stock_data['LB']}\n")
+            f.write("=====================================\n")
+            
+def getajaxdata(url, code):   # ajax模式 (已重構)
+    """
+    抓取單一股票的歷史資料，計算技術指標，並回傳一個包含所有結果的字典。
+    如果失敗則回傳 None。
+    """
+    # 建立Request物件，附加 Request Headers 的資訊
+    try:
+        request = req.Request(url, headers={
+            "referer":"https://histock.tw/stock/tv/tvchart.aspx?no=2330",   
+            "User-agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36"
+        })
+        with req.urlopen(request) as response:
+            data = response.read().decode("utf-8")
+
+        # 解析 JSON 格式資料
+        data = json.loads(data)
+
+        # 檢查資料是否足夠
+        if 'c' not in data or len(data['c']) < 20: # 至少需要20筆資料來算MA20
+            # print(f"代碼 {code}: 資料長度不足，跳過。")
+            return None
+
+        # 取得 JSON 資料中的股價與成交量
+        c = data['c']   # 股價每日收盤價
+        v = data['v']   # 股市每日交易量
+
+        # 將所有計算結果打包成一個字典
+        result_dict = {
+            'code'   : code,
+            'MA5'    : ma5(c),
+            'MA20'   : ma20(c),
+            'UB'     : B_Band_UB(c),
+            'LB'     : B_Band_LB(c),
+            'cprice' : c[len(c)-5:len(c)],
+            'volume' : v[len(v)-5:len(v)],
+            'VMA5'   : vma5(v)
+        }
+        
+        # 成功後回傳這個字典
+        return result_dict
+
+    except Exception as e:
+        # print(f"處理代碼 {code} 時發生錯誤: {e}")
+        # 發生任何錯誤都回傳 None
+        return None
+
 def vma5(v):
     VMA5 = []
     maxday = len(v)
