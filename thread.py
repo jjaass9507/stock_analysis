@@ -7,24 +7,58 @@ import concurrent.futures
 from concurrent.futures import as_completed
 import pandas as pd
 import datetime
+import requests
 
 def result(all_stock_data):
     """
-    接收包含所有股票資料的列表，進行分析並將符合條件的結果寫入 txt 檔案。
+    接收所有股票資料，進行分析，並將符合條件的結果寫入 txt 和 xlsx 檔案。
     """
     print("開始分析篩選結果...")
-    # 直接遍歷傳入的資料列表
+    
+    filtered_stocks = [] # 建立一個空列表，用來收集符合條件的股票
+    
+    # 遍歷所有抓取到的股票資料
     for stock_data in all_stock_data:
-        # 將單一股票的字典傳遞給 print_result 函式
+        # 1. 保持原有功能，將結果輸出到 txt 檔
         cr.print_result(stock_data)
-    print(f"分析完成，結果已存入 company-{datetime.date.today()}.txt")
+        
+        # 2. 呼叫分析函式，以收集結果準備寫入 Excel
+        analysis_result = cr.analyze_stock_strategy(stock_data)
+        if analysis_result:
+            filtered_stocks.append(analysis_result)
+
+    print(f"分析完成！共篩選出 {len(filtered_stocks)} 支符合條件的股票。")
+
+    # 3. 將收集到的結果寫入 Excel 檔案
+    if filtered_stocks:
+        print("正在生成 Excel 報告...")
+        
+        # 將字典列表轉換為 pandas DataFrame
+        df = pd.DataFrame(filtered_stocks)
+        
+        # 設定欄位順序
+        columns_order = [
+            '公司代碼', '收盤價', '連續MA5>MA20天數', '成交量是否放大', 
+            '布林帶寬((上/下)-1)', '布林帶寬((上-下)/中)', '最新成交量', 
+            '5日成交均量', '5日均線', '20日均線'
+        ]
+        df = df[columns_order]
+        
+        # 產生 Excel 檔名
+        excel_filename = f'filtered_stocks_{datetime.date.today()}.xlsx'
+        
+        # 將 DataFrame 寫入 Excel，index=False 表示不將 DataFrame 的索引寫入檔案
+        df.to_excel(excel_filename, index=False, engine='openpyxl')
+        
+        print(f"Excel 報告已儲存至: {excel_filename}")
+    else:
+        print("未篩選出符合條件的股票，不生成 Excel 檔案。")
 
 def crawler():
     """
-    爬取所有公司代碼，並使用多執行緒抓取每支股票的詳細資料。
+    爬取所有公司代碼，並使用多執行緒及 requests.Session 抓取每支股票的詳細資料。
     最終回傳一個包含所有成功抓取結果的列表。
     """
-    # 步驟 1: 抓取所有公司代碼
     print("正在抓取所有上市櫃公司代碼...")
     cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5")
     cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4")
@@ -33,13 +67,35 @@ def crawler():
     company_codes = cr.companycode
     total_companies = len(company_codes)
     print(f"代碼抓取完成，共 {total_companies} 家公司。")
-    print("開始使用多執行緒爬取個股資料...")
+    print("開始使用多執行緒爬取個股資料 (已啟用 Session)...")
     
-    # 步驟 2: 使用多執行緒爬取資料
     local_time = int(time.mktime(time.localtime()))
-    crawled_results = [] # 建立一個空列表，用來收集所有成功的回傳結果
+    crawled_results = []
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+    # 在 ThreadPoolExecutor 外層建立一個 Session 物件
+    # 這樣所有執行緒就可以共享這個 Session 及其連線池
+    with requests.Session() as session:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor: # 您可以調整 workers 數量
+            tasks = {}
+            for code in company_codes:
+                url = f"https://histock.tw/Stock/tv/udf.asmx/history?symbol={code}&resolution=D&from=1609430400&to={local_time}"
+                # 在提交任務時，將 session 物件作為參數傳遞進去
+                task = executor.submit(cr.getajaxdata, url, code, session)
+                tasks[task] = code
+                
+            count = 0
+            for future in as_completed(tasks):
+                count += 1
+                stock_result = future.result()
+                if stock_result:
+                    crawled_results.append(stock_result)
+                
+                print(f"進度: {count}/{total_companies}", end='\r')
+
+    print("\n所有個股資料爬取完成。")
+    return crawled_results
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
         # 建立任務字典 {future: code} 以便追蹤
         tasks = {}
         for code in company_codes:

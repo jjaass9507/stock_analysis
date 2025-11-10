@@ -11,6 +11,7 @@ import openpyxl
 import threading
 from openpyxl import Workbook
 from concurrent.futures import as_completed
+import requests
 
 lock = threading.RLock()
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -115,6 +116,52 @@ def savecode(code,MA5,MA20,LB,UB,cprice,volume,VMA5):    #儲存公司股價資�
     # print(output[1])
     with open('list-'+str(datetime.date.today())+'.json','w') as load: #把資料寫入json檔
         json.dump(code_json,load)
+
+def analyze_stock_strategy(stock_data):
+    """
+    專門用來分析單一股票是否符合策略的函式。
+    如果符合，回傳一個包含關鍵指標的字典。
+    如果不符合，回傳 None。
+    """
+    try:
+        # 1. 判斷趨勢: 連續幾天 MA5 > MA20
+        day = 0
+        for j in reversed(range(5)):
+            if stock_data["MA5"][j] > stock_data["MA20"][j]:
+                day += 1
+            else:
+                break
+
+        # 2. 計算布林帶寬指標
+        last_index = -1 # 使用 -1 更 pythonic，代表最後一個元素
+        BBW1 = round((stock_data["UB"][last_index] - stock_data["LB"][last_index]) / stock_data["MA20"][last_index], 2)
+        BBW2 = round((stock_data["UB"][last_index] / stock_data["LB"][last_index]) - 1, 2)
+        
+        # 3. 判斷成交量是否放大
+        volume_break = stock_data["volume"][last_index] > stock_data["VMA5"][last_index]
+
+        # 4. 策略條件判斷
+        if day >= 2 and BBW2 < 0.1 and volume_break:
+            # 整理成一個扁平化的字典，方便寫入 Excel
+            result = {
+                '公司代碼': stock_data['code'],
+                '收盤價': stock_data['cprice'][last_index],
+                '連續MA5>MA20天數': day,
+                '成交量是否放大': '是' if volume_break else '否',
+                '布林帶寬((上-下)/中)': BBW1,
+                '布林帶寬((上/下)-1)': BBW2,
+                '最新成交量': stock_data['volume'][last_index],
+                '5日成交均量': stock_data['VMA5'][last_index],
+                '5日均線': stock_data['MA5'][last_index],
+                '20日均線': stock_data['MA20'][last_index]
+            }
+            return result
+            
+    except (IndexError, ZeroDivisionError):
+        # 如果計算過程中發生錯誤 (例如除以零)，則視為不符合
+        return None
+        
+    return None # 預設回傳 None
 def print_result(stock_data):    # 將資料輸出為txt (已重構)
     """
     接收單一股票的資料字典，判斷是否符合策略，
@@ -154,32 +201,49 @@ def print_result(stock_data):    # 將資料輸出為txt (已重構)
             f.write(f"UB: {stock_data['UB']}\n")
             f.write(f"LB: {stock_data['LB']}\n")
             f.write("=====================================\n")
+
+    # 呼叫新的分析函式
+    analysis_result = analyze_stock_strategy(stock_data)
+    
+    # 如果分析結果不是 None，代表符合條件
+    if analysis_result:
+        with open(f'company-{datetime.date.today()}.txt', 'a', encoding='utf8') as f:
+            f.write(f"公司代碼: {analysis_result['公司代碼']}\n")
+            f.write(f"今日收盤價: {analysis_result['收盤價']}\n")
+            f.write(f"當前帶寬(上軌-下軌)/中線: {analysis_result['布林帶寬((上-下)/中)']}\n")
+            f.write(f"當前帶寬(上軌/下軌)-1: {analysis_result['布林帶寬((上/下)-1)']}\n")
+            f.write(f"連續 {analysis_result['連續MA5>MA20天數']} 天五日線高於中線\n")
+            # 原始資料的寫入可以視需求保留或移除
+            f.write(f"MA5: {stock_data['MA5']}\n")
+            f.write(f"MA20: {stock_data['MA20']}\n")
+            f.write("=====================================\n")
             
-def getajaxdata(url, code):   # ajax模式 (已重構)
+def getajaxdata(url, code, session):   # ajax模式 (已重構 for requests.Session)
     """
-    抓取單一股票的歷史資料，計算技術指標，並回傳一個包含所有結果的字典。
+    使用傳入的 requests.Session 物件抓取單一股票的歷史資料，
+    計算技術指標，並回傳一個包含所有結果的字典。
     如果失敗則回傳 None。
     """
-    # 建立Request物件，附加 Request Headers 的資訊
+    headers = {
+        "referer":"https://histock.tw/stock/tv/tvchart.aspx?no=2330",   
+        "User-agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36"
+    }
+    
     try:
-        request = req.Request(url, headers={
-            "referer":"https://histock.tw/stock/tv/tvchart.aspx?no=2330",   
-            "User-agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36"
-        })
-        with req.urlopen(request) as response:
-            data = response.read().decode("utf-8")
-
-        # 解析 JSON 格式資料
-        data = json.loads(data)
+        # 使用傳入的 session 物件發送 GET 請求，並設定 10 秒超時
+        response = session.get(url, headers=headers, timeout=10)
+        response.raise_for_status() # 如果請求失敗 (狀態碼非 2xx)，會拋出異常
+        
+        # 直接使用 .json() 方法將回應解析為 Python 字典，更簡潔
+        data = response.json()
 
         # 檢查資料是否足夠
-        if 'c' not in data or len(data['c']) < 20: # 至少需要20筆資料來算MA20
-            # print(f"代碼 {code}: 資料長度不足，跳過。")
+        if 'c' not in data or len(data['c']) < 20:
             return None
 
         # 取得 JSON 資料中的股價與成交量
-        c = data['c']   # 股價每日收盤價
-        v = data['v']   # 股市每日交易量
+        c = data['c']
+        v = data['v']
 
         # 將所有計算結果打包成一個字典
         result_dict = {
@@ -193,12 +257,15 @@ def getajaxdata(url, code):   # ajax模式 (已重構)
             'VMA5'   : vma5(v)
         }
         
-        # 成功後回傳這個字典
         return result_dict
 
+    except requests.exceptions.RequestException as e:
+        # 專門捕捉 requests 相關的錯誤 (如網路、超時)
+        # print(f"處理代碼 {code} 時發生網路錯誤: {e}")
+        return None
     except Exception as e:
-        # print(f"處理代碼 {code} 時發生錯誤: {e}")
-        # 發生任何錯誤都回傳 None
+        # 捕捉其他可能的錯誤 (如 JSON 解析失敗)
+        # print(f"處理代碼 {code} 時發生未知錯誤: {e}")
         return None
 
 def vma5(v):
