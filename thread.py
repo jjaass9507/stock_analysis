@@ -1,5 +1,5 @@
-# [完整替換 thread.py 的內容]
 
+from sqlalchemy import create_engine
 import threading
 import time
 import crawler_ajax as cr
@@ -8,6 +8,77 @@ from concurrent.futures import as_completed
 import pandas as pd
 import datetime
 import requests
+
+# 設定您的 Neon 資料庫連線字串 (建議設為環境變數，或暫時寫在這裡)
+# 注意：若使用 sqlalchemy，連線字串開頭須為 postgresql:// 而非 postgres://
+DB_CONNECTION_STR = "postgresql://neondb_owner:npg_4iLDkK9UWIgr@ep-cold-king-a4w2omct-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+
+def upload_to_neon(all_stock_data):
+    """
+    將爬蟲抓到的原始資料轉換為平整的格式，並上傳到 Neon 資料庫
+    """
+    print("正在準備上傳資料至 Neon 資料庫...")
+    
+    flat_data = []
+    today = datetime.date.today()
+    
+    for stock in all_stock_data:
+        try:
+            # 取得該股票最後一天的索引 (通常是 -1)
+            # 注意：您的 crawler_ajax.py 回傳的 cprice 等欄位是 list，取最後一個值代表最新
+            last_idx = -1 
+            
+            # 簡單計算帶寬供資料庫儲存
+            ub = stock['UB'][last_idx]
+            lb = stock['LB'][last_idx]
+            ma20 = stock['MA20'][last_idx]
+            bbw1 = round((ub - lb) / ma20, 2) if ma20 != 0 else 0
+            
+            # 計算趨勢天數 (重用您原本的邏輯)
+            day = 0
+            for j in reversed(range(5)):
+                if stock["MA5"][j] > stock["MA20"][j]:
+                    day += 1
+                else:
+                    break
+            
+            row = {
+                'record_date': today,
+                'code': stock['code'],
+                'close_price': stock['cprice'][last_idx],
+                'volume': stock['volume'][last_idx],
+                'ma5': stock['MA5'][last_idx],
+                'ma20': stock['MA20'][last_idx],
+                'ub': ub,
+                'lb': lb,
+                'bbw_ratio': bbw1,
+                'trend_days': day,
+                'volume_break': stock['volume'][last_idx] > stock['VMA5'][last_idx]
+            }
+            flat_data.append(row)
+        except Exception as e:
+            # 略過資料不全的個股
+            continue
+
+    if not flat_data:
+        print("沒有可上傳的資料。")
+        return
+
+    # 轉為 DataFrame
+    df_db = pd.DataFrame(flat_data)
+    
+    # 建立資料庫連線引擎
+    engine = create_engine(DB_CONNECTION_STR)
+    
+    try:
+        # 使用 pandas 的 to_sql 快速寫入
+        # if_exists='append' 表示若表存在則新增資料
+        # index=False 表示不將 pandas 的 index 寫入
+        df_db.to_sql('stock_daily_analysis', engine, if_exists='append', index=False, method='multi', chunksize=1000)
+        print(f"成功上傳 {len(df_db)} 筆資料至 Neon！")
+    except Exception as e:
+        print(f"上傳失敗: {e}")
+        # 這裡可以加入處理重複 Key 的邏輯，或者在 SQL 使用 ON CONFLICT (進階)
 
 def result(all_stock_data):
     """
@@ -94,28 +165,6 @@ def crawler():
 
     print("\n所有個股資料爬取完成。")
     return crawled_results
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
-        # 建立任務字典 {future: code} 以便追蹤
-        tasks = {}
-        for code in company_codes:
-            url = f"https://histock.tw/Stock/tv/udf.asmx/history?symbol={code}&resolution=D&from=1609430400&to={local_time}"
-            task = executor.submit(cr.getajaxdata, url, code)
-            tasks[task] = code
-            
-        # 步驟 3: 處理完成的任務並顯示進度
-        count = 0
-        for future in as_completed(tasks):
-            count += 1
-            stock_result = future.result() # 獲取 getajaxdata 的回傳值 (一個字典或 None)
-            if stock_result: # 如果回傳的不是 None，就表示成功
-                crawled_results.append(stock_result)
-            
-            # 打印進度
-            print(f"進度: {count}/{total_companies}", end='\r')
-
-    print("\n所有個股資料爬取完成。")
-    return crawled_results # 回傳收集到的結果列表
 
 def main():
     """
@@ -149,6 +198,9 @@ def main():
     # 3. 直接使用記憶體中的資料進行分析
     result(all_data)
     
+    # 4. 新增：上傳到資料庫
+    upload_to_neon(all_data)
+
     end_time = time.time()
     print(f"程式執行完畢，總花費 {end_time - start_time:.2f} 秒")
 
