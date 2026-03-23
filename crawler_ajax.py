@@ -57,17 +57,19 @@ def getdata(url):   #傳統模式(抓取上市上櫃公司代碼)
     #解析原始碼，取得每篇的標題
     root = bs4.BeautifulSoup(data,"lxml")    #讓beautifulsoup 協助我們以lxml解析 HTML 格式文件
     titles = root.find_all("tr")    #抓出所有 的 tr 標籤
+    
+    new_codes = set()
     for i in titles:        
-        c = i.td.text   #存取td標籤內的文字
-        # print(i.td.text)
-        c=c.split()
-        if len(c)>1:
-            companylist = companylist+[c]   #將文字存入列表內
-    for i in companylist:
-        if len(i[0])==4:                    #篩選出公司代碼來存入
-            companycode = companycode + [i[0]]
-    companycode = pd.unique(companycode).tolist()   #刪除列表內重複的欄位資料
-    companycode.sort()  #列表按照大小排列
+        if i.td:
+            c = i.td.text.split()
+            if len(c) > 1:
+                companylist.append(c)   #將文字存入列表內
+                if len(c[0]) == 4:
+                    new_codes.add(c[0]) #篩選出公司代碼來存入
+                    
+    # 將新代碼加入全域變數並去重排序
+    companycode.extend(list(new_codes))
+    companycode = sorted(list(set(companycode)))
     # print(companycode)
     #     c=i.text.replace("\xa0","") #把空格取代為空
     #     c=c.replace("\r","")        #把\r取代為空
@@ -272,8 +274,8 @@ def vma5(v):
     VMA5 = []
     maxday = len(v)
     for i in range(5):     
-        MA = round(pd.Series(v[maxday-5:maxday]).sum()/5,2)
-        VMA5 = VMA5 + [MA]
+        MA = round(sum(v[maxday-5:maxday])/5, 2)
+        VMA5.append(MA)
         maxday -= 1
     VMA5.reverse()
     return VMA5
@@ -281,8 +283,8 @@ def ma5(c):     #取得五日均線
     MA5 = []
     maxday = len(c)
     for i in range(5):     
-        MA = round(pd.Series(c[maxday-5:maxday]).sum()/5,2)
-        MA5 = MA5 + [MA]
+        MA = round(sum(c[maxday-5:maxday])/5, 2)
+        MA5.append(MA)
         maxday -= 1
     MA5.reverse()
     return MA5
@@ -290,8 +292,8 @@ def ma20(c):    #取得20日均線
     MA20 = []
     maxday = len(c)
     for i in range(5):     
-        MA = round(pd.Series(c[maxday-20:maxday]).sum()/20,2)
-        MA20 = MA20 + [MA]
+        MA = round(sum(c[maxday-20:maxday])/20, 2)
+        MA20.append(MA)
         maxday -= 1
     MA20.reverse()
     return MA20
@@ -299,8 +301,12 @@ def B_Band_LB(c):   #計算布林軌道上軌
     LB = []
     maxday = len(c)
     for i in range(5):     
-        MA = round(pd.Series(c[maxday-20:maxday]).sum()/20-pd.Series(c[maxday-20:maxday]).std(ddof= 0)*2,2)
-        LB = LB + [MA]
+        slice_c = c[maxday-20:maxday]
+        mean_val = sum(slice_c) / 20
+        # 樣本標準差: std_dev = sqrt(sum((x - mean)**2) / (N)) (ddof=0 in pandas std)
+        stdev = (sum((x - mean_val)**2 for x in slice_c) / 20) ** 0.5
+        MA = round(mean_val - stdev * 2, 2)
+        LB.append(MA)
         maxday -= 1
     LB.reverse()
     return LB
@@ -308,8 +314,11 @@ def B_Band_UB(c):   #計算布林軌道下軌
     UB = []
     maxday = len(c)
     for i in range(5):     
-        MA = round(pd.Series(c[maxday-20:maxday]).sum()/20+pd.Series(c[maxday-20:maxday]).std(ddof= 0)*2,2)
-        UB = UB + [MA]
+        slice_c = c[maxday-20:maxday]
+        mean_val = sum(slice_c) / 20
+        stdev = (sum((x - mean_val)**2 for x in slice_c) / 20) ** 0.5
+        MA = round(mean_val + stdev * 2, 2)
+        UB.append(MA)
         maxday -= 1
     UB.reverse()    
     return UB

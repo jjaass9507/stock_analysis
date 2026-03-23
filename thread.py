@@ -151,8 +151,11 @@ def crawler():
     local_time = int(time.mktime(time.localtime()))
     crawled_results = []
     
-    # 建立 Session 以重複利用 TCP 連線，提升爬蟲速度
+    # 建立 Session 以重複利用 TCP 連線，並設定連接池大小以匹配執行緒數量，提升爬蟲速度
     with requests.Session() as session:
+        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=3)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor: 
             tasks = {}
             for code in company_codes:
