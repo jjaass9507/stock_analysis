@@ -153,10 +153,11 @@ def crawler():
     
     # 建立 Session 以重複利用 TCP 連線，並設定連接池大小以匹配執行緒數量，提升爬蟲速度
     with requests.Session() as session:
-        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=3)
+        # 限制並發連線數與執行緒數，避免瞬間大量請求導致 IP 被 Histock 暫時封鎖
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
         session.mount('http://', adapter)
         session.mount('https://', adapter)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor: 
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor: 
             tasks = {}
             for code in company_codes:
                 url = f"https://histock.tw/Stock/tv/udf.asmx/history?symbol={code}&resolution=D&from=1609430400&to={local_time}"

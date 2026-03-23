@@ -266,8 +266,8 @@ def getajaxdata(url, code, session):   # ajax模式 (已重構 for requests.Sess
         # print(f"處理代碼 {code} 時發生網路錯誤: {e}")
         return None
     except Exception as e:
-        # 捕捉其他可能的錯誤 (如 JSON 解析失敗)
-        # print(f"處理代碼 {code} 時發生未知錯誤: {e}")
+        # 捕捉其他可能的錯誤 (如 JSON 解析失敗，或被伺服器阻擋)
+        # 避免印出大量錯誤訊息洗版，只回傳 None 忽略
         return None
 
 def vma5(v):
