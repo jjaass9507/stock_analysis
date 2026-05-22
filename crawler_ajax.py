@@ -20,8 +20,11 @@ def getdate():
     return [str(tonow - datetime.timedelta(days=i)) for i in reversed(range(5))]
 
 
-def getdata(url):
-    """抓取上市/上櫃/興櫃公司代碼，回傳排序後的代碼列表。"""
+def getdata(url, market):
+    """
+    抓取上市/上櫃/興櫃公司代碼。
+    回傳 (code, market) 元組的排序列表。
+    """
     request = req.Request(url, headers={
         "cookie": "",
         "User-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
@@ -40,8 +43,115 @@ def getdata(url):
             if len(c) > 1 and len(c[0]) == 4:
                 codes.add(c[0])
 
-    return sorted(list(codes))
+    return [(code, market) for code in sorted(codes)]
 
+
+# ---------------------------------------------------------------------------
+# 官方 TWSE / TPEX 資料抓取
+# ---------------------------------------------------------------------------
+
+def _parse_rows(data_rows, close_col=6, vol_col=1):
+    """
+    解析 TWSE / TPEX 的每日交易 rows，回傳 (收盤價列表, 成交量列表)。
+    成交量單位換算：股 → 張 (÷1000)。
+    """
+    closes, vols = [], []
+    for row in data_rows:
+        try:
+            close_str = row[close_col].replace(',', '').strip()
+            vol_str   = row[vol_col].replace(',', '').strip()
+            # 停牌或無成交日以 '--' 表示，跳過
+            if not close_str or '--' in close_str or close_str == '0':
+                continue
+            closes.append(float(close_str))
+            vols.append(int(vol_str) // 1000)   # 股 → 張
+        except (ValueError, IndexError, AttributeError):
+            continue
+    return closes, vols
+
+
+def _fetch_twse_month(code, year, month, session):
+    """
+    向 TWSE 官方 API 抓取指定月份的日交易資料。
+    endpoint: /exchangeReport/STOCK_DAY
+    """
+    url = (
+        f"https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+        f"?response=json&date={year}{month:02d}01&stockNo={code}"
+    )
+    try:
+        time.sleep(0.2)     # 避免過快觸發 TWSE 速率限制
+        resp = session.get(url, headers={"User-agent": "Mozilla/5.0"}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('stat') != 'OK' or not data.get('data'):
+            return [], []
+        return _parse_rows(data['data'])
+    except Exception:
+        return [], []
+
+
+def _fetch_tpex_month(code, year, month, session):
+    """
+    向 TPEX 官方 API 抓取指定月份的日交易資料。
+    endpoint: /web/stock/aftertrading/daily_trading_info/st43_result.php
+    """
+    url = (
+        f"https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/"
+        f"st43_result.php?l=zh-tw&d={year}/{month:02d}/01&stkno={code}"
+    )
+    try:
+        time.sleep(0.2)
+        resp = session.get(url, headers={"User-agent": "Mozilla/5.0"}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        rows = data.get('aaData', [])
+        if not rows:
+            return [], []
+        return _parse_rows(rows)
+    except Exception:
+        return [], []
+
+
+def fetch_stock_history(code, market, session):
+    """
+    從 TWSE 或 TPEX 官方 API 抓取個股歷史資料，
+    確保取得至少 20 個交易日的資料後計算技術指標，
+    回傳與舊版 getajaxdata() 相容的字典格式。
+    資料不足或發生錯誤時回傳 None。
+    """
+    today = datetime.date.today()
+    year, month = today.year, today.month
+    fetch_fn = _fetch_twse_month if market == 'TWSE' else _fetch_tpex_month
+
+    c, v = fetch_fn(code, year, month, session)
+
+    # 月初交易日不足 20 天時，補抓上個月資料
+    if len(c) < 20:
+        prev_year  = year if month > 1 else year - 1
+        prev_month = month - 1 if month > 1 else 12
+        c_prev, v_prev = fetch_fn(code, prev_year, prev_month, session)
+        c = c_prev + c
+        v = v_prev + v
+
+    if len(c) < 20:
+        return None
+
+    return {
+        'code':   code,
+        'MA5':    ma5(c),
+        'MA20':   ma20(c),
+        'UB':     B_Band_UB(c),
+        'LB':     B_Band_LB(c),
+        'cprice': c[-5:],
+        'volume': v[-5:],
+        'VMA5':   vma5(v)
+    }
+
+
+# ---------------------------------------------------------------------------
+# 策略分析
+# ---------------------------------------------------------------------------
 
 def analyze_stock_strategy(stock_data):
     """
@@ -104,7 +214,7 @@ def print_result(stock_data):
             f.write(f"當前帶寬(上軌/下軌)-1: {BBW2}\n")
             f.write(f"連續 {day} 天五日線高於中線\n")
             f.write(f"最近五日日期: {date_list}\n")
-            f.write(f"最近五日交易量: {stock_data['volume']}\n")
+            f.write(f"最近五日交易量(張): {stock_data['volume']}\n")
             f.write(f"最近五日交易量均線: {stock_data['VMA5']}\n")
             f.write(f"MA5: {stock_data['MA5']}\n")
             f.write(f"MA20: {stock_data['MA20']}\n")
@@ -113,44 +223,9 @@ def print_result(stock_data):
             f.write("=====================================\n")
 
 
-def getajaxdata(url, code, session):
-    """
-    使用傳入的 requests.Session 抓取單一股票歷史資料，
-    計算技術指標並回傳字典。失敗時回傳 None。
-    """
-    headers = {
-        "referer": "https://histock.tw/stock/tv/tvchart.aspx?no=2330",
-        "User-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36"
-    }
-
-    try:
-        response = session.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        if 'c' not in data or len(data['c']) < 20:
-            return None
-
-        c = data['c']
-        v = data['v']
-
-        return {
-            'code':   code,
-            'MA5':    ma5(c),
-            'MA20':   ma20(c),
-            'UB':     B_Band_UB(c),
-            'LB':     B_Band_LB(c),
-            'cprice': c[len(c)-5:len(c)],
-            'volume': v[len(v)-5:len(v)],
-            'VMA5':   vma5(v)
-        }
-
-    except requests.exceptions.RequestException:
-        return None
-    except Exception:
-        return None
-
+# ---------------------------------------------------------------------------
+# 技術指標計算
+# ---------------------------------------------------------------------------
 
 def vma5(v):
     result = []

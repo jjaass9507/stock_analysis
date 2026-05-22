@@ -134,43 +134,49 @@ def result(all_stock_data):
 
 def crawler():
     """
-    (保留原功能) 爬取所有公司代碼，並使用多執行緒及 requests.Session 抓取每支股票的詳細資料。
+    從 TWSE/TPEX 官方 API 抓取所有上市櫃公司的歷史資料。
+    上市 (strMode=5) 使用 TWSE API，上櫃/興櫃 (strMode=4/2) 使用 TPEX API。
     """
     print("正在抓取所有上市櫃公司代碼...")
-    codes = []
-    codes.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5"))
-    codes.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"))
-    codes.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"))
-    company_codes = sorted(list(set(codes)))
-    total_companies = len(company_codes)
+    all_stocks = []
+    all_stocks.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5", 'TWSE'))
+    all_stocks.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", 'TPEX'))
+    all_stocks.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", 'TPEX'))
+
+    # 代碼去重，以先出現的市場分類為準
+    seen = set()
+    unique_stocks = []
+    for code, market in all_stocks:
+        if code not in seen:
+            seen.add(code)
+            unique_stocks.append((code, market))
+    unique_stocks.sort(key=lambda x: x[0])
+
+    total_companies = len(unique_stocks)
     print(f"代碼抓取完成，共 {total_companies} 家公司。")
-    print("開始使用多執行緒爬取個股資料 (已啟用 Session)...")
-    
-    local_time = int(time.mktime(time.localtime()))
+    print("開始使用多執行緒爬取官方 API 資料...")
+
     crawled_results = []
-    
-    # 建立 Session 以重複利用 TCP 連線，並設定連接池大小以匹配執行緒數量，提升爬蟲速度
+
     with requests.Session() as session:
-        # 限制並發連線數與執行緒數，避免瞬間大量請求導致 IP 被 Histock 暫時封鎖
-        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
+        # 官方 API 對速率較敏感，連線池與執行緒數設為 5
+        adapter = requests.adapters.HTTPAdapter(pool_connections=5, pool_maxsize=5, max_retries=3)
         session.mount('http://', adapter)
         session.mount('https://', adapter)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor: 
-            tasks = {}
-            for code in company_codes:
-                url = f"https://histock.tw/Stock/tv/udf.asmx/history?symbol={code}&resolution=D&from=1609430400&to={local_time}"
-                # 提交任務，傳入 session
-                task = executor.submit(cr.getajaxdata, url, code, session)
-                tasks[task] = code
-                
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            tasks = {
+                executor.submit(cr.fetch_stock_history, code, market, session): code
+                for code, market in unique_stocks
+            }
+
             count = 0
             for future in as_completed(tasks):
                 count += 1
                 stock_result = future.result()
                 if stock_result:
                     crawled_results.append(stock_result)
-                
-                # 簡單進度條
+
                 if count % 50 == 0:
                     print(f"進度: {count}/{total_companies}", end='\r')
 
