@@ -7,7 +7,7 @@ import pandas as pd
 import datetime
 import requests
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,83 +16,111 @@ DB_CONNECTION_STR = os.environ.get("NEON_DB_URL")
 if not DB_CONNECTION_STR:
     raise RuntimeError("請在 .env 或環境變數中設定 NEON_DB_URL")
 
+_ENSURE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS stock_daily_analysis (
+    record_date   DATE         NOT NULL,
+    code          VARCHAR(10)  NOT NULL,
+    close_price   FLOAT,
+    volume        INT,
+    ma5           FLOAT,
+    ma20          FLOAT,
+    ub            FLOAT,
+    lb            FLOAT,
+    bbw_ratio     FLOAT,
+    trend_days    INT,
+    volume_break  BOOLEAN,
+    percent_b     FLOAT,
+    bbw_expanding BOOLEAN,
+    PRIMARY KEY (record_date, code)
+);
+ALTER TABLE stock_daily_analysis ADD COLUMN IF NOT EXISTS percent_b     FLOAT;
+ALTER TABLE stock_daily_analysis ADD COLUMN IF NOT EXISTS bbw_expanding BOOLEAN;
+"""
+
+
+def _ensure_schema(engine):
+    """建立資料表（若不存在）並補齊新增欄位。"""
+    with engine.connect() as conn:
+        for stmt in _ENSURE_SCHEMA_SQL.strip().split(';'):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(text(stmt))
+        conn.commit()
+
+
+def _get_analyzed_codes_today(engine):
+    """回傳今日已存入 DB 的股票代碼集合，供增量更新跳過使用。"""
+    tz_tw = datetime.timezone(datetime.timedelta(hours=8))
+    today = datetime.datetime.now(tz_tw).date()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT code FROM stock_daily_analysis WHERE record_date = :date"),
+            {"date": today}
+        )
+        return {row[0] for row in result}
+
+
 def upload_to_neon(all_stock_data):
-    """
-    將爬蟲抓到的原始資料轉換為平整的格式，並上傳到 Neon PostgreSQL 資料庫。
-    """
+    """將爬蟲資料轉換為平整格式並上傳至 Neon PostgreSQL。"""
     if not all_stock_data:
         return "沒有資料可上傳"
 
     print("正在準備上傳資料至 Neon 資料庫...")
-    
-    flat_data = []
-    # 設定時區為台灣時間 (UTC+8)，避免雲端主機時間造成日期錯誤
+
     tz_tw = datetime.timezone(datetime.timedelta(hours=8))
     today = datetime.datetime.now(tz_tw).date()
-    
+
+    flat_data = []
     for stock in all_stock_data:
         try:
-            # 取得該股票最後一天(最新)的索引
-            # crawler_ajax 回傳的 cprice, MA5 等欄位都是長度為 5 的 list，取 -1 代表最新
-            last_idx = -1 
-            
-            # 取得數值
-            ub = stock['UB'][last_idx]
-            lb = stock['LB'][last_idx]
-            ma20 = stock['MA20'][last_idx]
+            last_idx = -1
+            ub     = stock['UB'][last_idx]
+            lb     = stock['LB'][last_idx]
+            ma20   = stock['MA20'][last_idx]
             cprice = stock['cprice'][last_idx]
-            vol = stock['volume'][last_idx]
-            vma5 = stock['VMA5'][last_idx]
-            
-            # 計算布林帶寬指標
-            # 避免除以 0 的錯誤
+            vol    = stock['volume'][last_idx]
+            vma5   = stock['VMA5'][last_idx]
+
             bbw1 = round((ub - lb) / ma20, 2) if ma20 and ma20 != 0 else 0
-            
-            # 計算趨勢天數 (重用 crawler_ajax 的邏輯)
+
             day = 0
             for j in reversed(range(5)):
                 if stock["MA5"][j] > stock["MA20"][j]:
                     day += 1
                 else:
                     break
-            
-            # 整理成資料庫的一列 (Row)
-            row = {
-                'record_date': today,
-                'code': stock['code'],
-                'close_price': float(cprice),
-                'volume': int(vol),
-                'ma5': float(stock['MA5'][last_idx]),
-                'ma20': float(ma20),
-                'ub': float(ub),
-                'lb': float(lb),
-                'bbw_ratio': float(bbw1),
-                'trend_days': int(day),
-                'volume_break': bool(vol > vma5)
-            }
-            flat_data.append(row)
-            
-        except Exception as e:
-            # 若單一股票資料有缺漏，印出錯誤但不中斷整個流程
-            # print(f"處理股票 {stock.get('code', 'Unknown')} 時發生錯誤: {e}")
+
+            flat_data.append({
+                'record_date':   today,
+                'code':          stock['code'],
+                'close_price':   float(cprice),
+                'volume':        int(vol),
+                'ma5':           float(stock['MA5'][last_idx]),
+                'ma20':          float(ma20),
+                'ub':            float(ub),
+                'lb':            float(lb),
+                'bbw_ratio':     float(bbw1),
+                'trend_days':    int(day),
+                'volume_break':  bool(vol > vma5),
+                'percent_b':     float(stock.get('percent_b', [0.5] * 5)[last_idx]),
+                'bbw_expanding': bool(stock.get('bbw_expanding', False))
+            })
+        except Exception:
             continue
 
     if not flat_data:
         return "資料處理後為空，未上傳任何資料。"
 
-    # 轉為 Pandas DataFrame
     df_db = pd.DataFrame(flat_data)
-    
+
     try:
-        # 建立資料庫連線引擎
         engine = create_engine(DB_CONNECTION_STR)
-        
-        # 使用 pandas 的 to_sql 寫入
-        # if_exists='append': 若表存在則新增資料
-        # index=False: 不將 pandas 的 index 寫入
-        # method='multi': 批量插入，效能較好
-        df_db.to_sql('stock_daily_analysis', engine, if_exists='append', index=False, method='multi', chunksize=1000)
-        
+        _ensure_schema(engine)
+        df_db.to_sql(
+            'stock_daily_analysis', engine,
+            if_exists='append', index=False,
+            method='multi', chunksize=1000
+        )
         return f"成功更新 {len(df_db)} 筆資料至資料庫！"
     except Exception as e:
         return f"資料庫上傳失敗: {e}"
@@ -152,8 +180,21 @@ def crawler():
             unique_stocks.append((code, market))
     unique_stocks.sort(key=lambda x: x[0])
 
+    # 每日增量快取：跳過今日 DB 中已有資料的股票
+    try:
+        engine = create_engine(DB_CONNECTION_STR)
+        done_today = _get_analyzed_codes_today(engine)
+        if done_today:
+            unique_stocks = [(c, m) for c, m in unique_stocks if c not in done_today]
+            print(f"今日已分析 {len(done_today)} 檔，剩餘 {len(unique_stocks)} 檔待抓取。")
+    except Exception:
+        pass  # DB 尚不存在時跳過快取檢查
+
     total_companies = len(unique_stocks)
-    print(f"代碼抓取完成，共 {total_companies} 家公司。")
+    if total_companies == 0:
+        print("今日所有股票資料已是最新，無需重新抓取。")
+        return []
+    print(f"代碼抓取完成，共 {total_companies} 家公司待抓取。")
     print("開始使用多執行緒爬取官方 API 資料...")
 
     crawled_results = []

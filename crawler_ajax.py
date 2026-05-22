@@ -137,15 +137,33 @@ def fetch_stock_history(code, market, session):
     if len(c) < 20:
         return None
 
+    ub_list  = B_Band_UB(c)
+    lb_list  = B_Band_LB(c)
+    ma20_list = ma20(c)
+    c_last5  = c[-5:]
+
+    # %B = (Close - LB) / (UB - LB)，反映收盤價在布林帶中的相對位置
+    pb_list = []
+    for close, upper, lower in zip(c_last5, ub_list, lb_list):
+        band = upper - lower
+        pb_list.append(round((close - lower) / band, 4) if band > 0 else 0.5)
+
+    # 帶寬擴張確認：最新一天的帶寬比前一天大，表示壓縮結束、開始擴張
+    bbw_curr = (ub_list[-1] - lb_list[-1]) / ma20_list[-1] if ma20_list[-1] != 0 else 0
+    bbw_prev = (ub_list[-2] - lb_list[-2]) / ma20_list[-2] if ma20_list[-2] != 0 else 0
+    is_expanding = bbw_curr > bbw_prev
+
     return {
-        'code':   code,
-        'MA5':    ma5(c),
-        'MA20':   ma20(c),
-        'UB':     B_Band_UB(c),
-        'LB':     B_Band_LB(c),
-        'cprice': c[-5:],
-        'volume': v[-5:],
-        'VMA5':   vma5(v)
+        'code':         code,
+        'MA5':          ma5(c),
+        'MA20':         ma20_list,
+        'UB':           ub_list,
+        'LB':           lb_list,
+        'cprice':       c_last5,
+        'volume':       v[-5:],
+        'VMA5':         vma5(v),
+        'percent_b':    pb_list,
+        'bbw_expanding': is_expanding
     }
 
 
@@ -171,6 +189,9 @@ def analyze_stock_strategy(stock_data):
         BBW2 = round((stock_data["UB"][last_index] / stock_data["LB"][last_index]) - 1, 2)
         volume_break = stock_data["volume"][last_index] > stock_data["VMA5"][last_index]
 
+        percent_b_val  = stock_data.get('percent_b', [0.5] * 5)[last_index]
+        bbw_expanding  = stock_data.get('bbw_expanding', False)
+
         if day >= 2 and BBW2 < 0.1 and volume_break:
             return {
                 '公司代碼': stock_data['code'],
@@ -182,7 +203,9 @@ def analyze_stock_strategy(stock_data):
                 '最新成交量': stock_data['volume'][last_index],
                 '5日成交均量': stock_data['VMA5'][last_index],
                 '5日均線': stock_data['MA5'][last_index],
-                '20日均線': stock_data['MA20'][last_index]
+                '20日均線': stock_data['MA20'][last_index],
+                '%B': round(percent_b_val, 4),
+                '帶寬擴張': '是' if bbw_expanding else '否'
             }
 
     except (IndexError, ZeroDivisionError):
