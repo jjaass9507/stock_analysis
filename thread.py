@@ -8,14 +8,13 @@ import datetime
 import requests
 import os
 from sqlalchemy import create_engine
+from dotenv import load_dotenv
 
-# --- 設定資料庫連線 ---
-# 建議將真實的連線字串設定在環境變數中，或者 Streamlit 的 secrets 裡
-# 格式範例: "postgresql://neondb_owner:password@ep-something.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
-DB_CONNECTION_STR = os.environ.get(
-    "NEON_DB_URL", 
-    "postgresql://neondb_owner:npg_4iLDkK9UWIgr@ep-cold-king-a4w2omct-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-)
+load_dotenv()
+
+DB_CONNECTION_STR = os.environ.get("NEON_DB_URL")
+if not DB_CONNECTION_STR:
+    raise RuntimeError("請在 .env 或環境變數中設定 NEON_DB_URL")
 
 def upload_to_neon(all_stock_data):
     """
@@ -138,12 +137,11 @@ def crawler():
     (保留原功能) 爬取所有公司代碼，並使用多執行緒及 requests.Session 抓取每支股票的詳細資料。
     """
     print("正在抓取所有上市櫃公司代碼...")
-    # 呼叫 crawler_ajax.py 的函式抓取代碼
-    cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5")
-    cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4")
-    cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2")
-    
-    company_codes = cr.companycode
+    codes = []
+    codes.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5"))
+    codes.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"))
+    codes.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"))
+    company_codes = sorted(list(set(codes)))
     total_companies = len(company_codes)
     print(f"代碼抓取完成，共 {total_companies} 家公司。")
     print("開始使用多執行緒爬取個股資料 (已啟用 Session)...")

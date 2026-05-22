@@ -1,9 +1,12 @@
 import streamlit as st
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import datetime
 import os
-import thread as crawler_thread  # 匯入您的爬蟲模組
+from dotenv import load_dotenv
+import thread as crawler_thread
+
+load_dotenv()
 
 # --- 1. 頁面設定 ---
 st.set_page_config(
@@ -13,30 +16,24 @@ st.set_page_config(
 )
 
 # --- 2. 資料庫連線設定 ---
-# 優先嘗試從 Streamlit secrets 讀取，其次是環境變數，最後是預設值
-# 在 Streamlit Cloud 上，請在 Secrets 區域設定 NEON_DB_URL
-DB_CONNECTION_STR = os.environ.get(
-    "NEON_DB_URL", 
-    "postgresql://neondb_owner:npg_4iLDkK9UWIgr@ep-cold-king-a4w2omct-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-)
+DB_CONNECTION_STR = os.environ.get("NEON_DB_URL")
+if not DB_CONNECTION_STR:
+    st.error("請在 .env 或環境變數中設定 NEON_DB_URL")
+    st.stop()
 
 # --- 3. 載入資料函式 (含快取) ---
-@st.cache_data(ttl=300) # 設定 5 分鐘快取，避免頻繁查詢 DB
+@st.cache_data(ttl=300)
 def load_data(date_input):
-    """
-    從 Neon 資料庫讀取指定日期的分析資料
-    """
+    """從 Neon 資料庫讀取指定日期的分析資料。"""
     try:
         engine = create_engine(DB_CONNECTION_STR)
-        query = f"""
-        SELECT * FROM stock_daily_analysis 
-        WHERE record_date = '{date_input}'
-        ORDER BY code ASC
-        """
-        df = pd.read_sql(query, engine)
+        query = text(
+            "SELECT * FROM stock_daily_analysis "
+            "WHERE record_date = :date ORDER BY code ASC"
+        )
+        df = pd.read_sql(query, engine, params={"date": date_input})
         return df
     except Exception as e:
-        # 若資料表尚未建立或連線失敗，回傳空 DataFrame 並顯示錯誤
         st.error(f"無法讀取資料庫: {e}")
         return pd.DataFrame()
 

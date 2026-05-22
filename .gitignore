@@ -1,0 +1,23 @@
+# 環境變數（含資料庫密碼，絕不提交）
+.env
+
+# Streamlit 機密設定
+.streamlit/secrets.toml
+
+# 爬蟲產出的本地資料檔（體積大且含日期，不需版控）
+*.json
+*.xlsx
+company-*.txt
+
+# Python 編譯快取
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE 設定
+.vscode/
+.idea/
+
+# 虛擬環境
+venv/
+.venv/
