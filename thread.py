@@ -188,67 +188,38 @@ def result(all_stock_data):
 
 def crawler():
     """
-    從 TWSE/TPEX 官方 API 抓取所有上市櫃公司的歷史資料。
-    上市 (strMode=5) 使用 TWSE API，上櫃/興櫃 (strMode=4/2) 使用 TPEX API。
+    使用 FinMind API 批量抓取所有台股日交易資料。
+    以 1~2 次大量下載取代 2000+ 次個別請求，
+    不受 TWSE/TPEX 雲端 IP 封鎖影響。
     """
-    print("正在抓取所有上市櫃公司代碼...")
-    all_stocks = []
-    all_stocks.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5", 'TWSE'))
-    all_stocks.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", 'TPEX'))
-    all_stocks.extend(cr.getdata("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", 'TPEX'))
+    finmind_token = os.environ.get("FINMIND_TOKEN", "")
+    if not finmind_token:
+        raise RuntimeError(
+            "請在 .env（本地）或 Render 環境變數中設定 FINMIND_TOKEN。\n"
+            "申請網址：https://finmindtrade.com/"
+        )
 
-    # 代碼去重，以先出現的市場分類為準
-    seen = set()
-    unique_stocks = []
-    for code, market in all_stocks:
-        if code not in seen:
-            seen.add(code)
-            unique_stocks.append((code, market))
-    unique_stocks.sort(key=lambda x: x[0])
-
-    # 每日增量快取：跳過今日 DB 中已有資料的股票
-    try:
-        engine = create_engine(DB_CONNECTION_STR)
-        done_today = _get_analyzed_codes_today(engine)
-        if done_today:
-            unique_stocks = [(c, m) for c, m in unique_stocks if c not in done_today]
-            print(f"今日已分析 {len(done_today)} 檔，剩餘 {len(unique_stocks)} 檔待抓取。")
-    except Exception:
-        pass  # DB 尚不存在時跳過快取檢查
-
-    total_companies = len(unique_stocks)
-    if total_companies == 0:
-        print("今日所有股票資料已是最新，無需重新抓取。")
-        return [], 0   # (results, total_attempted)
-    print(f"代碼抓取完成，共 {total_companies} 家公司待抓取。")
-    print("開始使用多執行緒爬取官方 API 資料...")
-
-    crawled_results = []
+    print("正在從 FinMind API 批量下載台股資料（約 30~90 秒）...")
 
     with requests.Session() as session:
-        # 官方 API 對速率較敏感，連線池與執行緒數設為 5
-        adapter = requests.adapters.HTTPAdapter(pool_connections=5, pool_maxsize=5, max_retries=3)
-        session.mount('http://', adapter)
+        adapter = requests.adapters.HTTPAdapter(max_retries=3)
         session.mount('https://', adapter)
+        stock_map = cr.fetch_all_finmind(finmind_token, session)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            tasks = {
-                executor.submit(cr.fetch_stock_history, code, market, session): code
-                for code, market in unique_stocks
-            }
+    total_stocks = len(stock_map)
+    if total_stocks == 0:
+        return [], 0
 
-            count = 0
-            for future in as_completed(tasks):
-                count += 1
-                stock_result = future.result()
-                if stock_result:
-                    crawled_results.append(stock_result)
+    print(f"收到 {total_stocks} 檔股票資料，計算技術指標中...")
 
-                if count % 50 == 0:
-                    print(f"進度: {count}/{total_companies}", end='\r')
+    results = []
+    for stock_id, rows in stock_map.items():
+        r = cr.process_finmind_stock(stock_id, rows)
+        if r:
+            results.append(r)
 
-    print(f"\n所有個股資料爬取完成，共成功 {len(crawled_results)} 筆。")
-    return crawled_results, total_companies   # (results, total_attempted)
+    print(f"計算完成，共 {len(results)} 檔資料足夠。")
+    return results, total_stocks
 
 def run_crawler_pipeline():
     """

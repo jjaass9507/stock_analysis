@@ -47,8 +47,95 @@ def getdata(url, market):
 
 
 # ---------------------------------------------------------------------------
-# 官方 TWSE / TPEX 資料抓取
+# FinMind API 批量下載（取代 TWSE/TPEX 個別請求）
 # ---------------------------------------------------------------------------
+
+def fetch_all_finmind(token, session):
+    """
+    以 1~2 次 API 請求批量下載所有台股近期日交易資料。
+    回傳 {stock_id: [row_dict, ...]} 已依日期排序的字典。
+    """
+    today = datetime.date.today()
+    cur_month_start = today.replace(day=1)
+    stock_map = {}
+
+    def _fetch_period(start_date):
+        url = "https://api.finmindtrade.com/api/v4/data"
+        params = {
+            "dataset": "TaiwanStockPrice",
+            "start_date": start_date.isoformat(),
+            "token": token
+        }
+        time.sleep(0.5)
+        resp = session.get(url, params=params, timeout=120)
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("status") != 200:
+            raise Exception(f"FinMind API 回傳錯誤: {body.get('msg', '')}")
+        return body.get("data", [])
+
+    # 本月資料
+    for row in _fetch_period(cur_month_start):
+        stock_map.setdefault(row["stock_id"], []).append(row)
+
+    # 月初交易日不足 20 天，補抓上個月
+    sample_days = len(next(iter(stock_map.values()), []))
+    if sample_days < 20:
+        prev_start = (cur_month_start - datetime.timedelta(days=1)).replace(day=1)
+        for row in _fetch_period(prev_start):
+            stock_map.setdefault(row["stock_id"], []).insert(0, row)
+
+    for sid in stock_map:
+        stock_map[sid].sort(key=lambda r: r["date"])
+
+    return stock_map
+
+
+def process_finmind_stock(stock_id, rows):
+    """
+    處理 FinMind 單一股票的資料列表，計算布林帶技術指標。
+    資料不足 20 個交易日時回傳 None。
+    """
+    closes, vols = [], []
+    for row in rows:
+        try:
+            c = float(row["close"])
+            v = int(float(row["Trading_Volume"])) // 1000  # 股 → 張
+            if c > 0:
+                closes.append(c)
+                vols.append(v)
+        except (ValueError, KeyError, TypeError):
+            continue
+
+    if len(closes) < 20:
+        return None
+
+    ub_list   = B_Band_UB(closes)
+    lb_list   = B_Band_LB(closes)
+    ma20_list = ma20(closes)
+    c_last5   = closes[-5:]
+
+    pb_list = []
+    for close, upper, lower in zip(c_last5, ub_list, lb_list):
+        band = upper - lower
+        pb_list.append(round((close - lower) / band, 4) if band > 0 else 0.5)
+
+    bbw_curr = (ub_list[-1] - lb_list[-1]) / ma20_list[-1] if ma20_list[-1] != 0 else 0
+    bbw_prev = (ub_list[-2] - lb_list[-2]) / ma20_list[-2] if ma20_list[-2] != 0 else 0
+
+    return {
+        'code':          stock_id,
+        'MA5':           ma5(closes),
+        'MA20':          ma20_list,
+        'UB':            ub_list,
+        'LB':            lb_list,
+        'cprice':        c_last5,
+        'volume':        vols[-5:],
+        'VMA5':          vma5(vols),
+        'percent_b':     pb_list,
+        'bbw_expanding': bbw_curr > bbw_prev
+    }
+
 
 def _parse_rows(data_rows, close_col=6, vol_col=1):
     """
