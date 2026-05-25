@@ -82,13 +82,14 @@ def _probe_latest_trading_date(token, session):
     raise Exception(f"無法從 FinMind 取得交易日期。最後錯誤：{last_error}")
 
 
-def get_stock_list_finmind(token, session):
+def get_stock_list_finmind(token):
     """
-    從 FinMind TaiwanStockInfo 取得所有台股代碼（4 位純數字）。
-    失敗時回傳空清單，由 crawler 決定是否 fallback。
+    從 FinMind TaiwanStockInfo 取得所有台股代碼，回傳 [(code, market), ...] 清單。
+    market 依 type 欄位：'twse' → 'TWSE'，其餘 → 'TPEX'。
+    失敗時回傳空清單。
     """
     try:
-        resp = session.get(
+        resp = requests.get(
             "https://api.finmindtrade.com/api/v4/data",
             params={"dataset": "TaiwanStockInfo", "token": token},
             timeout=30
@@ -96,11 +97,18 @@ def get_stock_list_finmind(token, session):
         if resp.status_code != 200:
             return []
         rows = resp.json().get("data", [])
-        codes = sorted({
-            r["stock_id"] for r in rows
-            if len(r.get("stock_id", "")) == 4 and r["stock_id"].isdigit()
-        })
-        return codes
+        seen = set()
+        result = []
+        for r in rows:
+            code = r.get("stock_id", "")
+            if len(code) != 4 or not code.isdigit():
+                continue
+            if code in seen:
+                continue
+            seen.add(code)
+            market = "TWSE" if r.get("type", "").lower() == "twse" else "TPEX"
+            result.append((code, market))
+        return result
     except Exception:
         return []
 
