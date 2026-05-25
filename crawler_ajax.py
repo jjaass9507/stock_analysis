@@ -174,41 +174,84 @@ def process_finmind_stock(stock_id, rows):
 
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance 資料抓取（解決 TWSE/TPEX 封鎖雲端 IP 的問題）
-# Yahoo Finance 本身取自 TWSE/TPEX，但不限制雲端 IP，不需 API key
+# Yahoo Finance Chart API（直接呼叫，不依賴 yfinance 函式庫）
+# query1.finance.yahoo.com/v8/finance/chart/ 不限制雲端 IP，不需 API key
 # ---------------------------------------------------------------------------
 
-def probe_latest_date_yfinance():
-    """以 2330.TW 探測 Yahoo Finance 最新可用交易日（不依賴系統日期）。"""
-    import yfinance as yf
+_YF_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Referer": "https://finance.yahoo.com/",
+}
+
+
+def probe_latest_date_yahoo():
+    """
+    呼叫 Yahoo Finance Chart API 取得 2330.TW 最近 5 天資料，
+    回傳 (最新交易日, None) 或 (None, 錯誤說明字串)。
+    使用相對 range 參數，不依賴系統日期。
+    """
     try:
-        hist = yf.Ticker("2330.TW").history(period="5d")
-        if not hist.empty:
-            return hist.index[-1].date()
-    except Exception:
-        pass
-    return None
+        resp = requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/2330.TW",
+            params={"interval": "1d", "range": "5d"},
+            headers=_YF_HEADERS,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}: {resp.text[:300]}"
+        data = resp.json()
+        result = data.get("chart", {}).get("result") or []
+        if not result:
+            err = data.get("chart", {}).get("error", "chart.result 為空")
+            return None, str(err)
+        timestamps = result[0].get("timestamp", [])
+        if not timestamps:
+            return None, "timestamp 欄位為空"
+        latest_ts = max(timestamps)
+        latest_date = datetime.datetime.utcfromtimestamp(latest_ts).date()
+        return latest_date, None
+    except Exception as e:
+        return None, str(e)
 
 
-def fetch_stock_yfinance(code, market, start_date):
+def fetch_stock_yahoo(code, market):
     """
-    從 Yahoo Finance 抓取單一台股日 OHLCV 並計算布林帶指標。
-    TWSE 股票用 .TW，TPEX 股票用 .TWO；失敗時嘗試另一個後綴。
+    從 Yahoo Finance Chart API 抓取單一台股近 3 個月 OHLCV 並計算布林帶指標。
+    TWSE 用 .TW，TPEX 用 .TWO；若第一個後綴無資料則自動嘗試另一個。
+    range=3mo 為相對參數，不依賴系統日期。
     """
-    import yfinance as yf
-    primary = ".TW" if market == "TWSE" else ".TWO"
+    primary  = ".TW"  if market == "TWSE" else ".TWO"
     fallback = ".TWO" if primary == ".TW" else ".TW"
-    for suffix in (primary, fallback):
+    for sfx in (primary, fallback):
         try:
-            hist = yf.Ticker(code + suffix).history(start=start_date.isoformat())
-            if len(hist) < 20:
+            resp = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{sfx}",
+                params={"interval": "1d", "range": "3mo"},
+                headers=_YF_HEADERS,
+                timeout=15,
+            )
+            if resp.status_code != 200:
                 continue
-            closes = [float(c) for c in hist["Close"].tolist()]
-            # Yahoo Finance volume = shares；÷1000 換算為張
-            vols   = [max(0, int(v) // 1000) for v in hist["Volume"].tolist()]
-            result = _compute_indicators(code, closes, vols)
-            if result:
-                return result
+            result = (resp.json().get("chart", {}).get("result") or [{}])[0]
+            quotes  = (result.get("indicators", {}).get("quote") or [{}])[0]
+            closes  = quotes.get("close",  [])
+            volumes = quotes.get("volume", [])
+            pairs = [
+                (c, v) for c, v in zip(closes, volumes)
+                if c is not None and v is not None
+            ]
+            if len(pairs) < 20:
+                continue
+            c_list = [p[0] for p in pairs]
+            v_list = [max(0, int(p[1]) // 1000) for p in pairs]  # 股 → 張
+            r = _compute_indicators(code, c_list, v_list)
+            if r:
+                return r
         except Exception:
             continue
     return None

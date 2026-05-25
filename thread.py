@@ -193,11 +193,10 @@ def crawler():
     """
     # 1. 探測實際最新交易日（Yahoo Finance 伺服器時間，不依賴系統日期）
     print("正在探測最新交易日...")
-    latest_date = cr.probe_latest_date_yfinance()
+    latest_date, probe_err = cr.probe_latest_date_yahoo()
     if latest_date is None:
         raise RuntimeError(
-            "無法從 Yahoo Finance 取得最新交易日。"
-            "請確認 Render 伺服器可連線至 finance.yahoo.com。"
+            f"無法從 Yahoo Finance Chart API 取得最新交易日。原因：{probe_err}"
         )
 
     # 2. 取得股票代碼清單（isin.twse.com.tw；同時保留市場分類供 .TW/.TWO 判斷）
@@ -242,11 +241,11 @@ def crawler():
 
     print(f"共 {total} 檔，最新交易日 {latest_date}，開始多執行緒抓取...")
 
-    # 4. 多執行緒抓取（10 workers；yfinance 容許較高並行）
+    # 4. 多執行緒抓取（10 workers；Yahoo Finance Chart API 容許較高並行）
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         tasks = {
-            executor.submit(cr.fetch_stock_yfinance, code, market, prev_month_start): code
+            executor.submit(cr.fetch_stock_yahoo, code, market): code
             for code, market in unique_stocks
         }
         count = 0
