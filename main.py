@@ -33,7 +33,6 @@ def _run_crawler():
     import thread as crawler_thread
     global _crawler
     try:
-        _crawler.update(running=True, message="正在爬取 TWSE / TPEX 資料，約需 5–10 分鐘…", success=False)
         msg = crawler_thread.run_crawler_pipeline()
         _crawler.update(running=False, message=msg, success="成功" in msg)
     except Exception as e:
@@ -91,6 +90,7 @@ async def available_dates():
 async def start_crawl():
     if _crawler["running"]:
         return {"status": "running", "message": "爬蟲已在執行中，請稍候"}
+    _crawler.update(running=True, message="正在爬取 TWSE / TPEX 資料，約需 5–10 分鐘…", success=False)
     threading.Thread(target=_run_crawler, daemon=True).start()
     return {"status": "started", "message": "爬蟲已啟動，請稍候…"}
 

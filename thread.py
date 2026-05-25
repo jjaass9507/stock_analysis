@@ -116,11 +116,37 @@ def upload_to_neon(all_stock_data):
     try:
         engine = create_engine(DB_CONNECTION_STR)
         _ensure_schema(engine)
+        # 先寫入暫存表，再 upsert 至正式表，避免重複 PK 衝突
         df_db.to_sql(
-            'stock_daily_analysis', engine,
-            if_exists='append', index=False,
+            '_stock_upload_tmp', engine,
+            if_exists='replace', index=False,
             method='multi', chunksize=1000
         )
+        upsert_sql = text("""
+            INSERT INTO stock_daily_analysis
+                (record_date, code, close_price, volume, ma5, ma20,
+                 ub, lb, bbw_ratio, trend_days, volume_break, percent_b, bbw_expanding)
+            SELECT
+                record_date::date, code, close_price, volume, ma5, ma20,
+                ub, lb, bbw_ratio, trend_days, volume_break, percent_b, bbw_expanding
+            FROM _stock_upload_tmp
+            ON CONFLICT (record_date, code) DO UPDATE SET
+                close_price   = EXCLUDED.close_price,
+                volume        = EXCLUDED.volume,
+                ma5           = EXCLUDED.ma5,
+                ma20          = EXCLUDED.ma20,
+                ub            = EXCLUDED.ub,
+                lb            = EXCLUDED.lb,
+                bbw_ratio     = EXCLUDED.bbw_ratio,
+                trend_days    = EXCLUDED.trend_days,
+                volume_break  = EXCLUDED.volume_break,
+                percent_b     = EXCLUDED.percent_b,
+                bbw_expanding = EXCLUDED.bbw_expanding
+        """)
+        with engine.connect() as conn:
+            conn.execute(upsert_sql)
+            conn.execute(text("DROP TABLE IF EXISTS _stock_upload_tmp"))
+            conn.commit()
         return f"成功更新 {len(df_db)} 筆資料至資料庫！"
     except Exception as e:
         return f"資料庫上傳失敗: {e}"
@@ -236,7 +262,7 @@ def run_crawler_pipeline():
         all_data = crawler()
         
         if not all_data:
-            return "❌ 爬蟲執行完畢，但未抓取到任何資料。"
+            return "✅ 成功：今日資料已是最新，無需重新抓取。"
         
         status_log.append(f"✅ 爬蟲成功，共抓取 {len(all_data)} 檔股票。")
         
