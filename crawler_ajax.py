@@ -47,7 +47,7 @@ def getdata(url, market):
 
 
 # ---------------------------------------------------------------------------
-# FinMind API 批量下載（取代 TWSE/TPEX 個別請求）
+# FinMind API 逐支股票查詢（免費帳號可用；批量下載需付費方案）
 # ---------------------------------------------------------------------------
 
 def _probe_latest_trading_date(token, session):
@@ -78,54 +78,52 @@ def _probe_latest_trading_date(token, session):
     raise Exception("無法從 FinMind 探測有效交易日期，請確認 FINMIND_TOKEN 是否正確")
 
 
-def fetch_all_finmind(token, session):
+def get_stock_list_finmind(token, session):
     """
-    以 1~2 次 API 請求批量下載所有台股近期日交易資料。
-    先以單一股票探測實際最新交易日，避免系統日期錯誤導致查詢未來日期報 400。
-    回傳 (stock_map, latest_date)：
-      stock_map   = {stock_id: [row_dict, ...]} 已依日期排序
-      latest_date = FinMind 最新可用交易日（datetime.date）
+    從 FinMind TaiwanStockInfo 取得所有台股代碼（4 位純數字）。
+    失敗時回傳空清單，由 crawler 決定是否 fallback。
     """
-    latest_date = _probe_latest_trading_date(token, session)
-    cur_month_start = latest_date.replace(day=1)
-    stock_map = {}
-
-    def _fetch_period(start_date, end_date):
-        url = "https://api.finmindtrade.com/api/v4/data"
-        payload = {
-            "dataset": "TaiwanStockPrice",
-            "start_date": start_date.isoformat(),
-            "end_date":   end_date.isoformat(),
-            "token": token
-        }
-        time.sleep(0.5)
-        # 批量查詢（無 data_id）需用 POST，GET 會被 FinMind 以 400 拒絕
-        resp = session.post(url, data=payload, timeout=120)
+    try:
+        resp = session.get(
+            "https://api.finmindtrade.com/api/v4/data",
+            params={"dataset": "TaiwanStockInfo", "token": token},
+            timeout=30
+        )
         if resp.status_code != 200:
-            raise Exception(
-                f"FinMind 批量查詢失敗 {resp.status_code}: {resp.text[:400]}"
-            )
-        body = resp.json()
-        if body.get("status") != 200:
-            raise Exception(f"FinMind API 回傳錯誤: {body.get('msg', '')}")
-        return body.get("data", [])
+            return []
+        rows = resp.json().get("data", [])
+        codes = sorted({
+            r["stock_id"] for r in rows
+            if len(r.get("stock_id", "")) == 4 and r["stock_id"].isdigit()
+        })
+        return codes
+    except Exception:
+        return []
 
-    # 本月資料（月初 ~ 實際最新交易日）
-    for row in _fetch_period(cur_month_start, latest_date):
-        stock_map.setdefault(row["stock_id"], []).append(row)
 
-    # 月初交易日不足 20 天，補抓上個月
-    sample_days = len(next(iter(stock_map.values()), []))
-    if sample_days < 20:
-        prev_end   = cur_month_start - datetime.timedelta(days=1)
-        prev_start = prev_end.replace(day=1)
-        for row in _fetch_period(prev_start, prev_end):
-            stock_map.setdefault(row["stock_id"], []).insert(0, row)
-
-    for sid in stock_map:
-        stock_map[sid].sort(key=lambda r: r["date"])
-
-    return stock_map, latest_date
+def fetch_stock_finmind(stock_id, token, session, start_date):
+    """
+    從 FinMind 逐支抓取單一股票歷史資料並計算技術指標。
+    失敗或資料不足時回傳 None。
+    """
+    try:
+        time.sleep(0.25)   # 避免觸發 FinMind 速率限制
+        resp = session.get(
+            "https://api.finmindtrade.com/api/v4/data",
+            params={
+                "dataset": "TaiwanStockPrice",
+                "data_id": stock_id,
+                "start_date": start_date.isoformat(),
+                "token": token
+            },
+            timeout=30
+        )
+        if resp.status_code != 200:
+            return None
+        rows = resp.json().get("data", [])
+        return process_finmind_stock(stock_id, rows) if rows else None
+    except Exception:
+        return None
 
 
 def process_finmind_stock(stock_id, rows):
