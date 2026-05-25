@@ -194,6 +194,86 @@ def fetch_stock_yahoo(code, market):
     return None
 
 
+def _rolling_ma(closes, n):
+    """全歷程滾動 n 日均線，前 n-1 天填 None。"""
+    result = []
+    for i in range(len(closes)):
+        if i < n - 1:
+            result.append(None)
+        else:
+            result.append(round(sum(closes[i - n + 1:i + 1]) / n, 2))
+    return result
+
+
+def _rolling_bb(closes):
+    """全歷程布林帶（20 日 ±2σ），前 19 天填 None。回傳 (ub, lb)。"""
+    n = 20
+    ub, lb = [], []
+    for i in range(len(closes)):
+        if i < n - 1:
+            ub.append(None); lb.append(None)
+        else:
+            s = closes[i - n + 1:i + 1]
+            mean = sum(s) / n
+            stdev = (sum((x - mean) ** 2 for x in s) / n) ** 0.5
+            ub.append(round(mean + stdev * 2, 2))
+            lb.append(round(mean - stdev * 2, 2))
+    return ub, lb
+
+
+def fetch_kline_data(code):
+    """
+    從 Yahoo Finance 取得個股近 3 個月完整 OHLCV，計算布林帶與均線，供 K 線圖使用。
+    自動嘗試 .TW / .TWO 後綴，失敗回傳 None。
+    """
+    for sfx in ('.TW', '.TWO'):
+        try:
+            resp = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{sfx}",
+                params={"interval": "1d", "range": "3mo"},
+                headers=_YF_HEADERS, timeout=15,
+            )
+            if resp.status_code != 200:
+                continue
+            result     = (resp.json().get("chart", {}).get("result") or [{}])[0]
+            quotes     = (result.get("indicators", {}).get("quote") or [{}])[0]
+            timestamps = result.get("timestamp", [])
+            valid = [
+                (t, o, h, l, c, v)
+                for t, o, h, l, c, v in zip(
+                    timestamps,
+                    quotes.get("open",   []),
+                    quotes.get("high",   []),
+                    quotes.get("low",    []),
+                    quotes.get("close",  []),
+                    quotes.get("volume", []),
+                )
+                if None not in (o, h, l, c, v)
+            ]
+            if len(valid) < 20:
+                continue
+            dates_out = [datetime.datetime.utcfromtimestamp(t).strftime('%Y-%m-%d') for t, *_ in valid]
+            o_out = [round(x[1], 2) for x in valid]
+            h_out = [round(x[2], 2) for x in valid]
+            l_out = [round(x[3], 2) for x in valid]
+            c_out = [round(x[4], 2) for x in valid]
+            v_out = [max(0, int(x[5]) // 1000) for x in valid]
+            ub_out, lb_out = _rolling_bb(c_out)
+            return {
+                'code':  code,
+                'dates': dates_out,
+                'open':  o_out, 'high': h_out, 'low': l_out, 'close': c_out,
+                'volume': v_out,
+                'ma5':  _rolling_ma(c_out, 5),
+                'ma20': _rolling_ma(c_out, 20),
+                'ub':   ub_out,
+                'lb':   lb_out,
+            }
+        except Exception:
+            continue
+    return None
+
+
 def _parse_rows(data_rows, close_col=6, vol_col=1):
     """
     解析 TWSE / TPEX 的每日交易 rows，回傳 (收盤價列表, 成交量列表)。

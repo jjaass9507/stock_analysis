@@ -174,6 +174,44 @@ tbody td { padding: 9px 12px; color: #e6edf3; white-space: nowrap; }
 ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #484f58; }
 
+/* ── K-line Modal ─────────────────────────────────────────── */
+.kline-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.8);
+  z-index: 300; display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.kline-box {
+  background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+  width: 100%; max-width: 940px; max-height: 88vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.kline-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 18px; border-bottom: 1px solid #21262d; flex-shrink: 0;
+}
+.kline-title { font-size: 1rem; font-weight: 700; color: #e6edf3; }
+.kline-close-btn {
+  background: none; border: none; color: #6e7681; font-size: 1.1rem;
+  cursor: pointer; padding: 4px 8px; border-radius: 4px; line-height: 1;
+}
+.kline-close-btn:hover { background: #21262d; color: #e6edf3; }
+#kline-chart { flex: 1; min-height: 480px; }
+
+/* ── Backtest ─────────────────────────────────────────────── */
+.bt-params {
+  background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+  padding: 16px; display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+}
+.bt-field { display: flex; flex-direction: column; gap: 5px; }
+.bt-field label { font-size: 0.72rem; color: #8b949e; white-space: nowrap; }
+.bt-field input[type="number"] { width: 80px; }
+.bt-field input[type="date"]   { width: 140px; }
+.bt-checks { display: flex; gap: 12px; align-self: flex-end; margin-bottom: 3px; }
+.card-value-green { color: #3fb950; }
+.card-value-red   { color: #f85149; }
+.code-link { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.code-link:hover { color: #79c0ff; }
+
 /* ── Mobile Header (hidden on desktop) ────────────────────── */
 .mobile-header { display: none; }
 .sidebar-backdrop { display: none; }
@@ -262,6 +300,15 @@ tbody td { padding: 9px 12px; color: #e6edf3; white-space: nowrap; }
   .btn { padding: 11px 14px; font-size: 0.9rem; }
   .checkbox-row { padding: 4px 0; }
   input[type="date"], input[type="number"] { padding: 9px 10px; font-size: 0.9rem; }
+
+  /* K-line modal: bottom sheet on mobile */
+  .kline-overlay { padding: 0; align-items: flex-end; }
+  .kline-box { border-radius: 16px 16px 0 0; max-height: 88vh; max-width: 100%; }
+  #kline-chart { min-height: 360px; }
+
+  /* Backtest form: stack fields */
+  .bt-field input[type="date"] { width: 100%; }
+  .bt-field input[type="number"] { width: 72px; }
 }
 </style>
 </head>
@@ -377,7 +424,8 @@ tbody td { padding: 9px 12px; color: #e6edf3; white-space: nowrap; }
   <div class="tabs">
     <button class="tab-btn" :class="{active: tab==='list'}"  @click="switchTab('list')">📋 訊號列表</button>
     <button class="tab-btn" :class="{active: tab==='chart'}" @click="switchTab('chart')">📊 分佈圖</button>
-    <button class="tab-btn" :class="{active: tab==='guide'}" @click="switchTab('guide')">💡 指標說明</button>
+    <button class="tab-btn" :class="{active: tab==='guide'}"     @click="switchTab('guide')">💡 指標說明</button>
+    <button class="tab-btn" :class="{active: tab==='backtest'}" @click="switchTab('backtest')">🔬 歷史回測</button>
   </div>
 
   <!-- Tab Panels -->
@@ -446,7 +494,7 @@ tbody td { padding: 9px 12px; color: #e6edf3; white-space: nowrap; }
           <tbody>
             <template x-for="row in filtered" :key="row.code">
               <tr>
-                <td class="code-cell" x-text="row.code"></td>
+                <td class="code-cell code-link" @click="openKline(row.code)" x-text="row.code"></td>
 
                 <td class="price-cell" x-text="'$' + row.close_price.toFixed(2)"></td>
 
@@ -552,8 +600,131 @@ tbody td { padding: 9px 12px; color: #e6edf3; white-space: nowrap; }
       </div>
     </div>
 
+    <!-- ── Tab: 歷史回測 ── -->
+    <div x-show="tab==='backtest'">
+
+      <!-- 參數區 -->
+      <div class="bt-params">
+        <div class="bt-field"><label>多頭天數 ≥</label>
+          <input type="number" x-model.number="bt.minTrend" min="0" step="1"></div>
+        <div class="bt-field"><label>帶寬比率 ≤</label>
+          <input type="number" x-model.number="bt.maxBbw" min="0" step="0.01"></div>
+        <div class="bt-checks">
+          <label class="checkbox-row"><input type="checkbox" x-model="bt.onlyVol"> 爆量</label>
+          <label class="checkbox-row"><input type="checkbox" x-model="bt.onlyExp"> 帶寬擴張</label>
+        </div>
+        <div class="bt-field"><label>停損 %</label>
+          <input type="number" x-model.number="bt.stopLoss" min="1" max="50" step="0.5"></div>
+        <div class="bt-field"><label>停利 %</label>
+          <input type="number" x-model.number="bt.takeProfit" min="1" max="100" step="1"></div>
+        <div class="bt-field"><label>最長持有（天）</label>
+          <input type="number" x-model.number="bt.maxHoldDays" min="1" max="90" step="1"></div>
+        <div class="bt-field"><label>起始日期</label>
+          <input type="date" x-model="bt.startDate"></div>
+        <div class="bt-field"><label>結束日期</label>
+          <input type="date" x-model="bt.endDate"></div>
+        <button class="btn btn-primary btn-sm" style="align-self:flex-end"
+                @click="runBacktest()" :disabled="btLoading">
+          <span x-show="btLoading" class="spinner" style="width:14px;height:14px"></span>
+          <span x-text="btLoading ? '計算中…' : '🔬 執行回測'"></span>
+        </button>
+      </div>
+
+      <!-- 無資料提示 -->
+      <div class="state-box" x-show="btDone && !btResult?.stats?.total && !btLoading" style="margin-top:24px">
+        <div class="icon">📭</div>
+        <div>此區間內未產生任何交易，請嘗試放寬篩選條件或擴大日期範圍</div>
+      </div>
+
+      <!-- 結果區 -->
+      <template x-if="btResult?.stats?.total > 0">
+        <div>
+          <!-- 統計卡 -->
+          <div class="metrics" style="padding:0;margin-top:16px">
+            <div class="card">
+              <div class="card-label">總交易次數</div>
+              <div class="card-value" x-text="btResult.stats.total"></div>
+            </div>
+            <div class="card">
+              <div class="card-label">勝率</div>
+              <div class="card-value" x-text="btResult.stats.win_rate + '%'"></div>
+              <div class="card-delta" :class="btResult.stats.win_rate >= 50 ? 'green' : ''"
+                   x-text="btResult.stats.win_rate >= 50 ? '超過半數獲利' : '未超過半數獲利'"></div>
+            </div>
+            <div class="card">
+              <div class="card-label">平均報酬</div>
+              <div class="card-value"
+                   :class="btResult.stats.avg_pnl >= 0 ? 'card-value-green' : 'card-value-red'"
+                   x-text="(btResult.stats.avg_pnl >= 0 ? '+' : '') + btResult.stats.avg_pnl + '%'"></div>
+            </div>
+            <div class="card">
+              <div class="card-label">最大回撤</div>
+              <div class="card-value card-value-red"
+                   x-text="'-' + btResult.stats.max_drawdown + '%'"></div>
+              <div class="card-delta"
+                   x-text="'期末資金 $' + btResult.stats.final_equity.toLocaleString()"></div>
+            </div>
+          </div>
+
+          <!-- 資金曲線 -->
+          <div id="bt-chart" style="width:100%;height:260px;border:1px solid #21262d;border-radius:8px;overflow:hidden;margin-top:16px"></div>
+          <p class="chart-caption" style="margin-top:8px">💡 初始資金 $10,000，每筆固定投入 $100，報酬依出場日累加</p>
+
+          <!-- 交易明細 -->
+          <div class="table-wrap" style="margin-top:16px">
+            <table>
+              <thead>
+                <tr>
+                  <th>代碼</th><th>進場日</th><th>出場日</th>
+                  <th>進場價</th><th>出場價</th><th>報酬%</th>
+                  <th>持有天</th><th>出場原因</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="t in btResult.trades" :key="t.code + t.entry_date">
+                  <tr>
+                    <td class="code-cell code-link" @click="openKline(t.code)" x-text="t.code"></td>
+                    <td x-text="t.entry_date"></td>
+                    <td x-text="t.exit_date"></td>
+                    <td x-text="'$' + t.entry_price"></td>
+                    <td x-text="'$' + t.exit_price"></td>
+                    <td :class="t.pnl_pct >= 0 ? 'check-yes' : 'check-no'"
+                        x-text="(t.pnl_pct >= 0 ? '+' : '') + t.pnl_pct + '%'"></td>
+                    <td x-text="t.hold_days"></td>
+                    <td x-text="t.exit_reason"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+
+    </div><!-- /backtest -->
+
   </div><!-- /tab-panels -->
 </div><!-- /main -->
+
+<!-- ════════════════════════════════════════════════════════ K-LINE MODAL -->
+<div class="kline-overlay" x-show="klineOpen" x-transition:enter="transition ease-out duration-150"
+     x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+     @click.self="closeKline()" style="display:none">
+  <div class="kline-box">
+    <div class="kline-header">
+      <span class="kline-title" x-text="'📊 ' + klineCode + '　K線圖（近3個月）'"></span>
+      <button class="kline-close-btn" @click="closeKline()">✕</button>
+    </div>
+    <div x-show="klineLoading" class="state-box" style="min-height:480px">
+      <div class="spinner" style="width:32px;height:32px;border-width:3px"></div>
+      <div>載入K線資料中…</div>
+    </div>
+    <div x-show="klineErr" class="state-box" style="min-height:480px">
+      <div class="icon">⚠️</div>
+      <div x-text="klineErr"></div>
+    </div>
+    <div id="kline-chart" x-show="!klineLoading && !klineErr"></div>
+  </div>
+</div>
 
 <script>
 function app() {
@@ -580,6 +751,22 @@ function app() {
     crawlerRunning: false,
     crawlerMsg: '',
     crawlerSuccess: false,
+
+    // ── K-line ───────────────────────────────────────────
+    klineOpen: false,
+    klineCode: '',
+    klineLoading: false,
+    klineErr: '',
+
+    // ── Backtest ─────────────────────────────────────────
+    bt: {
+      minTrend: 2, maxBbw: 0.15, onlyVol: true, onlyExp: false,
+      stopLoss: 7, takeProfit: 15, maxHoldDays: 20,
+      startDate: '', endDate: '',
+    },
+    btLoading: false,
+    btResult: null,
+    btDone: false,
 
     // ── Computed ─────────────────────────────────────────
     get filtered() {
@@ -727,6 +914,133 @@ function app() {
       }
     },
 
+    // ── K-line methods ───────────────────────────────────
+    async openKline(code) {
+      this.klineCode = code;
+      this.klineLoading = true;
+      this.klineErr = '';
+      this.klineOpen = true;
+      try {
+        const res = await fetch(`/api/stock/${code}/kline`);
+        const data = await res.json();
+        if (data.error) { this.klineErr = data.error; this.klineLoading = false; return; }
+        this.$nextTick(() => this.renderKline(data));
+      } catch(e) {
+        this.klineErr = '載入失敗：' + e.message;
+        this.klineLoading = false;
+      }
+    },
+
+    closeKline() {
+      this.klineOpen = false;
+      Plotly.purge('kline-chart');
+    },
+
+    renderKline(data) {
+      this.klineLoading = false;
+      const upColor   = 'rgba(63,185,80,0.85)';
+      const downColor = 'rgba(248,81,73,0.85)';
+      const volColors = data.close.map((c, i) => i > 0 && c >= data.close[i-1] ? upColor : downColor);
+
+      const traces = [
+        // BB 上軌（先畫，供 lb fill tonexty 參照）
+        { x: data.dates, y: data.ub, type: 'scatter', mode: 'lines', name: '上軌',
+          line: { color: 'rgba(248,81,73,0.6)', width: 1, dash: 'dot' },
+          hoverinfo: 'skip' },
+        // BB 下軌，填色到上軌
+        { x: data.dates, y: data.lb, type: 'scatter', mode: 'lines', name: '下軌',
+          fill: 'tonexty', fillcolor: 'rgba(56,139,253,0.07)',
+          line: { color: 'rgba(63,185,80,0.6)', width: 1, dash: 'dot' },
+          hoverinfo: 'skip' },
+        // MA20 中線
+        { x: data.dates, y: data.ma20, type: 'scatter', mode: 'lines', name: 'MA20',
+          line: { color: '#e3b341', width: 1.2 }, hoverinfo: 'skip' },
+        // MA5
+        { x: data.dates, y: data.ma5, type: 'scatter', mode: 'lines', name: 'MA5',
+          line: { color: '#79c0ff', width: 1.2 }, hoverinfo: 'skip' },
+        // 蠟燭圖（最後畫，渲染在最上層）
+        { type: 'candlestick', name: data.code,
+          x: data.dates, open: data.open, high: data.high, low: data.low, close: data.close,
+          increasing: { line: { color: upColor }, fillcolor: upColor },
+          decreasing: { line: { color: downColor }, fillcolor: downColor },
+          yaxis: 'y' },
+        // 量柱
+        { type: 'bar', name: '成交量(張)', x: data.dates, y: data.volume,
+          marker: { color: volColors }, yaxis: 'y2', hovertemplate: '%{y:,} 張<extra></extra>' },
+      ];
+
+      Plotly.react('kline-chart', traces, {
+        paper_bgcolor: '#0d1117', plot_bgcolor: '#161b22',
+        font: { color: '#e6edf3', family: 'system-ui, sans-serif', size: 11 },
+        xaxis:  { gridcolor: '#1e2632', color: '#8b949e', linecolor: '#21262d',
+                  rangeslider: { visible: false }, type: 'category', tickangle: -30,
+                  nticks: 10 },
+        yaxis:  { gridcolor: '#1e2632', color: '#8b949e', linecolor: '#21262d',
+                  domain: [0.28, 1], autorange: true },
+        yaxis2: { gridcolor: '#1e2632', color: '#8b949e', linecolor: '#21262d',
+                  domain: [0, 0.22], showticklabels: false },
+        legend: { bgcolor: '#161b22', bordercolor: '#21262d', borderwidth: 1,
+                  font: { color: '#c9d1d9', size: 11 }, orientation: 'h', y: 1.05, x: 0 },
+        hovermode: 'x unified',
+        margin: { l: 55, r: 20, t: 30, b: 50 },
+      }, { responsive: true, displayModeBar: false });
+    },
+
+    // ── Backtest methods ──────────────────────────────────
+    async runBacktest() {
+      if (this.btLoading) return;
+      this.btLoading = true;
+      this.btResult = null;
+      this.btDone = false;
+      try {
+        const res = await fetch('/api/backtest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            min_trend:     this.bt.minTrend,
+            max_bbw:       this.bt.maxBbw,
+            only_vol:      this.bt.onlyVol,
+            only_exp:      this.bt.onlyExp,
+            stop_loss:     this.bt.stopLoss / 100,
+            take_profit:   this.bt.takeProfit / 100,
+            max_hold_days: this.bt.maxHoldDays,
+            start_date:    this.bt.startDate,
+            end_date:      this.bt.endDate,
+          }),
+        });
+        const data = await res.json();
+        if (data.error) { alert('回測失敗：' + data.error); return; }
+        this.btResult = data;
+        this.$nextTick(() => this.renderEquityCurve(data.equity_curve));
+      } catch(e) {
+        alert('回測失敗：' + e.message);
+      } finally {
+        this.btLoading = false;
+        this.btDone = true;
+      }
+    },
+
+    renderEquityCurve(curve) {
+      if (!curve || !curve.length) return;
+      Plotly.react('bt-chart', [{
+        x: curve.map(p => p.date),
+        y: curve.map(p => p.equity),
+        type: 'scatter', mode: 'lines', name: '資金曲線',
+        fill: 'tozeroy', fillcolor: 'rgba(56,139,253,0.1)',
+        line: { color: '#388bfd', width: 2 },
+        hovertemplate: '%{x}<br>$%{y:,.0f}<extra></extra>',
+      }], {
+        paper_bgcolor: '#0d1117', plot_bgcolor: '#161b22',
+        font: { color: '#e6edf3', family: 'system-ui, sans-serif', size: 11 },
+        xaxis: { gridcolor: '#1e2632', color: '#8b949e', linecolor: '#21262d', nticks: 8 },
+        yaxis: { gridcolor: '#1e2632', color: '#8b949e', linecolor: '#21262d' },
+        shapes: [{ type: 'line', y0: 10000, y1: 10000, x0: 0, x1: 1, xref: 'paper',
+                   line: { color: '#484f58', dash: 'dot', width: 1 } }],
+        margin: { l: 60, r: 20, t: 10, b: 40 },
+        showlegend: false,
+      }, { responsive: true, displayModeBar: false });
+    },
+
     formatDate(s) {
       if (!s) return '';
       const [y, m, d] = s.split('-');
@@ -738,6 +1052,11 @@ function app() {
       await this.fetchAvailableDates();
       if (this.availableDates.length && !this.availableDates.includes(this.date)) {
         this.date = this.availableDates[0];
+      }
+      // 回測日期預設為全部可用區間
+      if (this.availableDates.length) {
+        this.bt.endDate   = this.availableDates[0];
+        this.bt.startDate = this.availableDates[this.availableDates.length - 1];
       }
       this.fetchData();
       // 篩選器變動時若在圖表頁則重繪
