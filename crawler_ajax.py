@@ -130,40 +130,22 @@ def fetch_stock_finmind(stock_id, token, session, start_date):
         return None
 
 
-def process_finmind_stock(stock_id, rows):
-    """
-    處理 FinMind 單一股票的資料列表，計算布林帶技術指標。
-    資料不足 20 個交易日時回傳 None。
-    """
-    closes, vols = [], []
-    for row in rows:
-        try:
-            c = float(row["close"])
-            v = int(float(row["Trading_Volume"])) // 1000  # 股 → 張
-            if c > 0:
-                closes.append(c)
-                vols.append(v)
-        except (ValueError, KeyError, TypeError):
-            continue
-
+def _compute_indicators(code, closes, vols):
+    """收盤價與成交量（張）列表 → 布林帶策略指標字典；資料不足 20 天回傳 None。"""
     if len(closes) < 20:
         return None
-
     ub_list   = B_Band_UB(closes)
     lb_list   = B_Band_LB(closes)
     ma20_list = ma20(closes)
     c_last5   = closes[-5:]
-
     pb_list = []
     for close, upper, lower in zip(c_last5, ub_list, lb_list):
         band = upper - lower
         pb_list.append(round((close - lower) / band, 4) if band > 0 else 0.5)
-
     bbw_curr = (ub_list[-1] - lb_list[-1]) / ma20_list[-1] if ma20_list[-1] != 0 else 0
     bbw_prev = (ub_list[-2] - lb_list[-2]) / ma20_list[-2] if ma20_list[-2] != 0 else 0
-
     return {
-        'code':          stock_id,
+        'code':          code,
         'MA5':           ma5(closes),
         'MA20':          ma20_list,
         'UB':            ub_list,
@@ -174,6 +156,62 @@ def process_finmind_stock(stock_id, rows):
         'percent_b':     pb_list,
         'bbw_expanding': bbw_curr > bbw_prev
     }
+
+
+def process_finmind_stock(stock_id, rows):
+    """處理 FinMind 單一股票的資料列表，計算布林帶技術指標。"""
+    closes, vols = [], []
+    for row in rows:
+        try:
+            c = float(row["close"])
+            v = int(float(row["Trading_Volume"])) // 1000  # 股 → 張
+            if c > 0:
+                closes.append(c)
+                vols.append(v)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return _compute_indicators(stock_id, closes, vols)
+
+
+# ---------------------------------------------------------------------------
+# Yahoo Finance 資料抓取（解決 TWSE/TPEX 封鎖雲端 IP 的問題）
+# Yahoo Finance 本身取自 TWSE/TPEX，但不限制雲端 IP，不需 API key
+# ---------------------------------------------------------------------------
+
+def probe_latest_date_yfinance():
+    """以 2330.TW 探測 Yahoo Finance 最新可用交易日（不依賴系統日期）。"""
+    import yfinance as yf
+    try:
+        hist = yf.Ticker("2330.TW").history(period="5d")
+        if not hist.empty:
+            return hist.index[-1].date()
+    except Exception:
+        pass
+    return None
+
+
+def fetch_stock_yfinance(code, market, start_date):
+    """
+    從 Yahoo Finance 抓取單一台股日 OHLCV 並計算布林帶指標。
+    TWSE 股票用 .TW，TPEX 股票用 .TWO；失敗時嘗試另一個後綴。
+    """
+    import yfinance as yf
+    primary = ".TW" if market == "TWSE" else ".TWO"
+    fallback = ".TWO" if primary == ".TW" else ".TW"
+    for suffix in (primary, fallback):
+        try:
+            hist = yf.Ticker(code + suffix).history(start=start_date.isoformat())
+            if len(hist) < 20:
+                continue
+            closes = [float(c) for c in hist["Close"].tolist()]
+            # Yahoo Finance volume = shares；÷1000 換算為張
+            vols   = [max(0, int(v) // 1000) for v in hist["Volume"].tolist()]
+            result = _compute_indicators(code, closes, vols)
+            if result:
+                return result
+        except Exception:
+            continue
+    return None
 
 
 def _parse_rows(data_rows, close_col=6, vol_col=1):

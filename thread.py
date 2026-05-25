@@ -188,79 +188,75 @@ def result(all_stock_data):
 
 def crawler():
     """
-    使用 FinMind API 逐支抓取台股日交易資料。
-    免費帳號限逐支查詢；先探測實際最新交易日，再多執行緒抓取，
-    並以增量快取跳過當日 DB 已有資料的股票。
+    使用 Yahoo Finance（yfinance）逐支抓取台股日交易資料。
+    Yahoo Finance 本身取自 TWSE/TPEX，不封鎖雲端 IP，不需 API key。
     """
-    finmind_token = os.environ.get("FINMIND_TOKEN", "")
-    if not finmind_token:
+    # 1. 探測實際最新交易日（Yahoo Finance 伺服器時間，不依賴系統日期）
+    print("正在探測最新交易日...")
+    latest_date = cr.probe_latest_date_yfinance()
+    if latest_date is None:
         raise RuntimeError(
-            "請在 .env（本地）或 Render 環境變數中設定 FINMIND_TOKEN。\n"
-            "申請網址：https://finmindtrade.com/"
+            "無法從 Yahoo Finance 取得最新交易日。"
+            "請確認 Render 伺服器可連線至 finance.yahoo.com。"
         )
 
-    with requests.Session() as session:
-        adapter = requests.adapters.HTTPAdapter(max_retries=3)
-        session.mount('https://', adapter)
-
-        # 1. 探測實際最新交易日（不依賴系統日期）
-        latest_date = cr._probe_latest_trading_date(finmind_token, session)
-
-        # 2. 取得股票代碼清單（FinMind TaiwanStockInfo → fallback isin.twse.com.tw）
-        print("正在取得台股代碼清單...")
-        stock_codes = cr.get_stock_list_finmind(finmind_token, session)
-        if not stock_codes:
-            all_stocks = []
-            for url, market in [
-                ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5", "TWSE"),
-                ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", "TPEX"),
-                ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "TPEX"),
-            ]:
-                try:
-                    all_stocks.extend(cr.getdata(url, market))
-                except Exception:
-                    pass
-            stock_codes = sorted({code for code, _ in all_stocks})
-        if not stock_codes:
-            raise RuntimeError("無法取得股票代碼清單（FinMind 及 isin.twse.com.tw 皆失敗）")
-
-        # 3. 增量快取：跳過 latest_date 當日 DB 中已有的股票
+    # 2. 取得股票代碼清單（isin.twse.com.tw；同時保留市場分類供 .TW/.TWO 判斷）
+    print("正在取得台股代碼清單...")
+    all_stocks = []
+    for url, market in [
+        ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=5", "TWSE"),
+        ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", "TPEX"),
+        ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "TPEX"),
+    ]:
         try:
-            engine = create_engine(DB_CONNECTION_STR)
-            done = _get_analyzed_codes_by_date(engine, latest_date)
-            if done:
-                stock_codes = [c for c in stock_codes if c not in done]
-                print(f"增量快取：已有 {len(done)} 檔，剩餘 {len(stock_codes)} 檔待抓取。")
+            all_stocks.extend(cr.getdata(url, market))
         except Exception:
             pass
+    if not all_stocks:
+        raise RuntimeError("無法取得台股代碼清單（isin.twse.com.tw 連線失敗）")
 
-        total = len(stock_codes)
-        if total == 0:
-            return [], 0, latest_date
+    # 去重
+    seen = set()
+    unique_stocks = []
+    for code, market in all_stocks:
+        if code not in seen:
+            seen.add(code)
+            unique_stocks.append((code, market))
 
-        # 確保取得 20 個交易日以上：從上個月初開始抓
-        prev_month_start = (latest_date.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
-        start_date = prev_month_start
+    # 3. 增量快取：跳過 latest_date 當日 DB 已有的股票
+    try:
+        engine = create_engine(DB_CONNECTION_STR)
+        done = _get_analyzed_codes_by_date(engine, latest_date)
+        if done:
+            unique_stocks = [(c, m) for c, m in unique_stocks if c not in done]
+            print(f"增量快取：已有 {len(done)} 檔，剩餘 {len(unique_stocks)} 檔待抓取。")
+    except Exception:
+        pass
 
-        print(f"共 {total} 檔，最新交易日 {latest_date}，開始多執行緒抓取...")
+    total = len(unique_stocks)
+    if total == 0:
+        return [], 0, latest_date
 
-        # 4. 多執行緒逐支抓取（5 workers，每支間隔 0.25s）
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            tasks = {
-                executor.submit(
-                    cr.fetch_stock_finmind, code, finmind_token, session, start_date
-                ): code
-                for code in stock_codes
-            }
-            count = 0
-            for future in as_completed(tasks):
-                count += 1
-                r = future.result()
-                if r:
-                    results.append(r)
-                if count % 200 == 0:
-                    print(f"進度: {count}/{total}")
+    # start_date：從上個月初抓起，確保有 20+ 個交易日
+    prev_month_start = (latest_date.replace(day=1) - datetime.timedelta(days=1)).replace(day=1)
+
+    print(f"共 {total} 檔，最新交易日 {latest_date}，開始多執行緒抓取...")
+
+    # 4. 多執行緒抓取（10 workers；yfinance 容許較高並行）
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        tasks = {
+            executor.submit(cr.fetch_stock_yfinance, code, market, prev_month_start): code
+            for code, market in unique_stocks
+        }
+        count = 0
+        for future in as_completed(tasks):
+            count += 1
+            r = future.result()
+            if r:
+                results.append(r)
+            if count % 200 == 0:
+                print(f"進度: {count}/{total}")
 
     print(f"抓取完成，共 {len(results)} / {total} 檔有效。")
     return results, total, latest_date
