@@ -212,12 +212,10 @@ def crawler():
         except Exception:
             pass
     if not all_stocks:
-        finmind_token = os.environ.get("FINMIND_TOKEN", "")
-        if finmind_token:
-            print("isin.twse.com.tw 連線失敗，改用 FinMind TaiwanStockInfo...")
-            all_stocks = cr.get_stock_list_finmind(finmind_token)
+        print("isin.twse.com.tw 連線失敗，改用 TWSE/TPEx OpenAPI...")
+        all_stocks = cr.get_stock_list_openapi()
     if not all_stocks:
-        raise RuntimeError("無法取得台股代碼清單（isin.twse.com.tw 及 FinMind 皆失敗）")
+        raise RuntimeError("無法取得台股代碼清單（isin.twse.com.tw 及 TWSE/TPEx OpenAPI 皆失敗）")
 
     # 去重
     seen = set()

@@ -46,96 +46,40 @@ def getdata(url, market):
     return [(code, market) for code in sorted(codes)]
 
 
-# ---------------------------------------------------------------------------
-# FinMind API 逐支股票查詢（免費帳號可用；批量下載需付費方案）
-# ---------------------------------------------------------------------------
+def get_stock_list_openapi():
+    """
+    從 TWSE/TPEx 公開 OpenAPI 取得台股代碼清單，回傳 [(code, market), ...]。
+    使用與 isin.twse.com.tw 不同的伺服器，雲端環境通常可存取。
+    """
+    seen = set()
+    result = []
 
-def _probe_latest_trading_date(token, session):
-    """
-    以 2330 單一股票探測 FinMind 實際最新交易日。
-    系統時鐘可能與市場日期不符（例如設為未來），
-    此函式從當前系統年份往前逐年嘗試，找到有資料的最新日期。
-    """
-    sys_year = datetime.date.today().year
-    last_error = "（未嘗試任何年份）"
-    for start_year in range(sys_year, sys_year - 5, -1):
+    sources = [
+        (
+            "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+            "TWSE",
+            "Code",
+        ),
+        (
+            "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
+            "TPEX",
+            "SecuritiesCompanyCode",
+        ),
+    ]
+    for url, market, field in sources:
         try:
-            resp = session.get(
-                "https://api.finmindtrade.com/api/v4/data",
-                params={
-                    "dataset": "TaiwanStockPrice",
-                    "data_id": "2330",
-                    "start_date": f"{start_year}-01-01",
-                    "token": token
-                },
-                timeout=30
-            )
-            if resp.status_code == 200:
-                rows = resp.json().get("data", [])
-                if rows:
-                    return datetime.date.fromisoformat(max(r["date"] for r in rows))
-                last_error = f"{start_year}: HTTP 200 但 data 為空"
-            else:
-                last_error = f"{start_year}: HTTP {resp.status_code} — {resp.text[:300]}"
-        except Exception as e:
-            last_error = f"{start_year}: {e}"
-    raise Exception(f"無法從 FinMind 取得交易日期。最後錯誤：{last_error}")
-
-
-def get_stock_list_finmind(token):
-    """
-    從 FinMind TaiwanStockInfo 取得所有台股代碼，回傳 [(code, market), ...] 清單。
-    market 依 type 欄位：'twse' → 'TWSE'，其餘 → 'TPEX'。
-    失敗時回傳空清單。
-    """
-    try:
-        resp = requests.get(
-            "https://api.finmindtrade.com/api/v4/data",
-            params={"dataset": "TaiwanStockInfo", "token": token},
-            timeout=30
-        )
-        if resp.status_code != 200:
-            return []
-        rows = resp.json().get("data", [])
-        seen = set()
-        result = []
-        for r in rows:
-            code = r.get("stock_id", "")
-            if len(code) != 4 or not code.isdigit():
+            resp = requests.get(url, headers={"Accept": "application/json"}, timeout=15)
+            if resp.status_code != 200:
                 continue
-            if code in seen:
-                continue
-            seen.add(code)
-            market = "TWSE" if r.get("type", "").lower() == "twse" else "TPEX"
-            result.append((code, market))
-        return result
-    except Exception:
-        return []
+            for r in resp.json():
+                code = r.get(field, "")
+                if len(code) == 4 and code.isdigit() and code not in seen:
+                    seen.add(code)
+                    result.append((code, market))
+        except Exception:
+            continue
 
-
-def fetch_stock_finmind(stock_id, token, session, start_date):
-    """
-    從 FinMind 逐支抓取單一股票歷史資料並計算技術指標。
-    失敗或資料不足時回傳 None。
-    """
-    try:
-        time.sleep(0.25)   # 避免觸發 FinMind 速率限制
-        resp = session.get(
-            "https://api.finmindtrade.com/api/v4/data",
-            params={
-                "dataset": "TaiwanStockPrice",
-                "data_id": stock_id,
-                "start_date": start_date.isoformat(),
-                "token": token
-            },
-            timeout=30
-        )
-        if resp.status_code != 200:
-            return None
-        rows = resp.json().get("data", [])
-        return process_finmind_stock(stock_id, rows) if rows else None
-    except Exception:
-        return None
+    return result
 
 
 def _compute_indicators(code, closes, vols):
@@ -164,21 +108,6 @@ def _compute_indicators(code, closes, vols):
         'percent_b':     pb_list,
         'bbw_expanding': bbw_curr > bbw_prev
     }
-
-
-def process_finmind_stock(stock_id, rows):
-    """處理 FinMind 單一股票的資料列表，計算布林帶技術指標。"""
-    closes, vols = [], []
-    for row in rows:
-        try:
-            c = float(row["close"])
-            v = int(float(row["Trading_Volume"])) // 1000  # 股 → 張
-            if c > 0:
-                closes.append(c)
-                vols.append(v)
-        except (ValueError, KeyError, TypeError):
-            continue
-    return _compute_indicators(stock_id, closes, vols)
 
 
 # ---------------------------------------------------------------------------
