@@ -59,11 +59,12 @@ def fetch_all_finmind(token, session):
     cur_month_start = today.replace(day=1)
     stock_map = {}
 
-    def _fetch_period(start_date):
+    def _fetch_period(start_date, end_date):
         url = "https://api.finmindtrade.com/api/v4/data"
         params = {
             "dataset": "TaiwanStockPrice",
             "start_date": start_date.isoformat(),
+            "end_date":   end_date.isoformat(),
             "token": token
         }
         time.sleep(0.5)
@@ -74,15 +75,16 @@ def fetch_all_finmind(token, session):
             raise Exception(f"FinMind API 回傳錯誤: {body.get('msg', '')}")
         return body.get("data", [])
 
-    # 本月資料
-    for row in _fetch_period(cur_month_start):
+    # 本月資料（月初 ~ 今天）
+    for row in _fetch_period(cur_month_start, today):
         stock_map.setdefault(row["stock_id"], []).append(row)
 
-    # 月初交易日不足 20 天，補抓上個月
+    # 月初交易日不足 20 天，補抓上個月（月初 ~ 月底）
     sample_days = len(next(iter(stock_map.values()), []))
     if sample_days < 20:
-        prev_start = (cur_month_start - datetime.timedelta(days=1)).replace(day=1)
-        for row in _fetch_period(prev_start):
+        prev_end   = cur_month_start - datetime.timedelta(days=1)
+        prev_start = prev_end.replace(day=1)
+        for row in _fetch_period(prev_start, prev_end):
             stock_map.setdefault(row["stock_id"], []).insert(0, row)
 
     for sid in stock_map:
