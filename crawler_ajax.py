@@ -49,36 +49,68 @@ def getdata(url, market):
 def get_stock_list_openapi():
     """
     從 TWSE/TPEx 公開 OpenAPI 取得台股代碼清單，回傳 [(code, market), ...]。
-    使用與 isin.twse.com.tw 不同的伺服器，雲端環境通常可存取。
+    加入診斷 log 協助排查單一來源失敗問題。
     """
-    seen = set()
+    seen   = set()
     result = []
 
-    sources = [
-        (
+    # ── TWSE 上市 ─────────────────────────────────────────
+    try:
+        resp = requests.get(
             "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
-            "TWSE",
-            "Code",
-        ),
-        (
-            "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
-            "TPEX",
-            "SecuritiesCompanyCode",
-        ),
+            headers={"Accept": "application/json"}, timeout=15,
+        )
+        if resp.status_code == 200:
+            n = 0
+            for r in resp.json():
+                code = r.get("Code", "").strip()
+                if len(code) == 4 and code.isdigit() and code not in seen:
+                    seen.add(code); result.append((code, "TWSE")); n += 1
+            print(f"[stock_list] TWSE: {n} 檔")
+        else:
+            print(f"[stock_list] TWSE HTTP {resp.status_code}")
+    except Exception as e:
+        print(f"[stock_list] TWSE 例外: {e}")
+
+    # ── TPEx 上櫃（嘗試兩個端點，自動偵測欄位名）────────────
+    _TPEX_URLS = [
+        "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
+        "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes",
     ]
-    for url, market, field in sources:
+    _TPEX_CODE_FIELDS = ("SecuritiesCompanyCode", "stockCode", "code", "Code")
+
+    tpex_ok = False
+    for url in _TPEX_URLS:
+        if tpex_ok:
+            break
         try:
             resp = requests.get(url, headers={"Accept": "application/json"}, timeout=15)
             if resp.status_code != 200:
+                print(f"[stock_list] TPEx {url} HTTP {resp.status_code}")
                 continue
-            for r in resp.json():
-                code = r.get(field, "")
-                if len(code) == 4 and code.isdigit() and code not in seen:
-                    seen.add(code)
-                    result.append((code, market))
-        except Exception:
-            continue
+            rows = resp.json()
+            if not rows:
+                print(f"[stock_list] TPEx {url}: 空陣列（可能為非交易日）")
+                continue
+            # 印出實際欄位，幫助日後除錯
+            print(f"[stock_list] TPEx {url}: {len(rows)} 筆, 欄位樣本={list(rows[0].keys())[:8]}")
+            for field in _TPEX_CODE_FIELDS:
+                n = 0
+                for r in rows:
+                    code = str(r.get(field, "")).strip()
+                    if len(code) == 4 and code.isdigit() and code not in seen:
+                        seen.add(code); result.append((code, "TPEX")); n += 1
+                if n > 0:
+                    print(f"[stock_list] TPEx 使用欄位 '{field}': {n} 檔")
+                    tpex_ok = True
+                    break
+        except Exception as e:
+            print(f"[stock_list] TPEx {url} 例外: {e}")
 
+    if not tpex_ok:
+        print("[stock_list] 警告：TPEx 清單取得失敗，本次僅抓 TWSE 股票")
+
+    print(f"[stock_list] 合計: {len(result)} 檔")
     return result
 
 
