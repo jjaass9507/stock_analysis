@@ -57,6 +57,7 @@ def _probe_latest_trading_date(token, session):
     此函式從當前系統年份往前逐年嘗試，找到有資料的最新日期。
     """
     sys_year = datetime.date.today().year
+    last_error = "（未嘗試任何年份）"
     for start_year in range(sys_year, sys_year - 5, -1):
         try:
             resp = session.get(
@@ -73,9 +74,12 @@ def _probe_latest_trading_date(token, session):
                 rows = resp.json().get("data", [])
                 if rows:
                     return datetime.date.fromisoformat(max(r["date"] for r in rows))
-        except Exception:
-            pass
-    raise Exception("無法從 FinMind 探測有效交易日期，請確認 FINMIND_TOKEN 是否正確")
+                last_error = f"{start_year}: HTTP 200 但 data 為空"
+            else:
+                last_error = f"{start_year}: HTTP {resp.status_code} — {resp.text[:300]}"
+        except Exception as e:
+            last_error = f"{start_year}: {e}"
+    raise Exception(f"無法從 FinMind 取得交易日期。最後錯誤：{last_error}")
 
 
 def get_stock_list_finmind(token, session):
