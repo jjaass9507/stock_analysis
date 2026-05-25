@@ -9,6 +9,7 @@ charset-normalizer==3.4.4
 click==8.1.8
 colorama==0.4.6
 et-xmlfile==2.0.0
+fastapi==0.115.12
 gitdb==4.0.12
 gitpython==3.1.45
 greenlet==3.2.4
@@ -31,6 +32,7 @@ pyarrow==21.0.0
 pydeck==0.9.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.0
+python-multipart==0.0.20
 pytz==2025.2
 referencing==0.36.2
 requests==2.32.5
@@ -46,4 +48,5 @@ tornado==6.5.2
 typing-extensions==4.15.0
 tzdata==2025.2
 urllib3==2.5.0
+uvicorn[standard]==0.34.3
 watchdog==6.0.0
