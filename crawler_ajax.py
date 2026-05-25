@@ -92,15 +92,19 @@ def fetch_all_finmind(token, session):
 
     def _fetch_period(start_date, end_date):
         url = "https://api.finmindtrade.com/api/v4/data"
-        params = {
+        payload = {
             "dataset": "TaiwanStockPrice",
             "start_date": start_date.isoformat(),
             "end_date":   end_date.isoformat(),
             "token": token
         }
         time.sleep(0.5)
-        resp = session.get(url, params=params, timeout=120)
-        resp.raise_for_status()
+        # 批量查詢（無 data_id）需用 POST，GET 會被 FinMind 以 400 拒絕
+        resp = session.post(url, data=payload, timeout=120)
+        if resp.status_code != 200:
+            raise Exception(
+                f"FinMind 批量查詢失敗 {resp.status_code}: {resp.text[:400]}"
+            )
         body = resp.json()
         if body.get("status") != 200:
             raise Exception(f"FinMind API 回傳錯誤: {body.get('msg', '')}")
