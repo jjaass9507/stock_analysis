@@ -632,9 +632,13 @@ function app() {
       return `${y} 年 ${m} 月 ${d} 日`;
     },
 
-    init() {
+    async init() {
+      // 先取得有資料的日期清單，若今天沒有資料則自動切換到最近一筆
+      await this.fetchAvailableDates();
+      if (this.availableDates.length && !this.availableDates.includes(this.date)) {
+        this.date = this.availableDates[0];
+      }
       this.fetchData();
-      this.fetchAvailableDates();
       // 篩選器變動時若在圖表頁則重繪
       this.$watch('filtered', () => {
         if (this.tab === 'chart') this.$nextTick(() => this.renderChart());

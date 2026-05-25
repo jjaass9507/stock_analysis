@@ -219,7 +219,7 @@ def crawler():
     total_companies = len(unique_stocks)
     if total_companies == 0:
         print("今日所有股票資料已是最新，無需重新抓取。")
-        return []
+        return [], 0   # (results, total_attempted)
     print(f"代碼抓取完成，共 {total_companies} 家公司待抓取。")
     print("開始使用多執行緒爬取官方 API 資料...")
 
@@ -248,7 +248,7 @@ def crawler():
                     print(f"進度: {count}/{total_companies}", end='\r')
 
     print(f"\n所有個股資料爬取完成，共成功 {len(crawled_results)} 筆。")
-    return crawled_results
+    return crawled_results, total_companies   # (results, total_attempted)
 
 def run_crawler_pipeline():
     """
@@ -259,19 +259,25 @@ def run_crawler_pipeline():
     status_log = []
     try:
         # 1. 執行爬蟲
-        all_data = crawler()
-        
-        if not all_data:
+        all_data, total_attempted = crawler()
+
+        if total_attempted == 0:
             return "✅ 成功：今日資料已是最新，無需重新抓取。"
-        
-        status_log.append(f"✅ 爬蟲成功，共抓取 {len(all_data)} 檔股票。")
-        
+
+        if not all_data:
+            return (
+                f"❌ 爬蟲發出 {total_attempted} 筆請求，但全部回傳空資料。\n"
+                "可能原因：① 今日為非交易日（週末/假日）② 交易所 API 封鎖此伺服器 IP"
+            )
+
+        status_log.append(f"✅ 爬蟲成功，共抓取 {len(all_data)} / {total_attempted} 檔股票。")
+
         # 2. 上傳資料庫
         upload_msg = upload_to_neon(all_data)
         status_log.append(f"📤 {upload_msg}")
-        
+
         return "\n".join(status_log)
-        
+
     except Exception as e:
         return f"❌ 執行過程中發生嚴重錯誤: {str(e)}"
 
@@ -282,10 +288,10 @@ def main():
     start_time = time.time()
     
     # 1. 執行爬蟲
-    all_data = crawler()
-    
+    all_data, total_attempted = crawler()
+
     if not all_data:
-        print("沒有成功抓取到任何資料，程式結束。")
+        print(f"沒有成功抓取到任何資料（嘗試 {total_attempted} 檔），程式結束。")
         return
 
     # 2. (本地備份) 將所有資料存成 JSON
