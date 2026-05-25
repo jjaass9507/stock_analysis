@@ -50,13 +50,44 @@ def getdata(url, market):
 # FinMind API 批量下載（取代 TWSE/TPEX 個別請求）
 # ---------------------------------------------------------------------------
 
+def _probe_latest_trading_date(token, session):
+    """
+    以 2330 單一股票探測 FinMind 實際最新交易日。
+    系統時鐘可能與市場日期不符（例如設為未來），
+    此函式從當前系統年份往前逐年嘗試，找到有資料的最新日期。
+    """
+    sys_year = datetime.date.today().year
+    for start_year in range(sys_year, sys_year - 5, -1):
+        try:
+            resp = session.get(
+                "https://api.finmindtrade.com/api/v4/data",
+                params={
+                    "dataset": "TaiwanStockPrice",
+                    "data_id": "2330",
+                    "start_date": f"{start_year}-01-01",
+                    "token": token
+                },
+                timeout=30
+            )
+            if resp.status_code == 200:
+                rows = resp.json().get("data", [])
+                if rows:
+                    return datetime.date.fromisoformat(max(r["date"] for r in rows))
+        except Exception:
+            pass
+    raise Exception("無法從 FinMind 探測有效交易日期，請確認 FINMIND_TOKEN 是否正確")
+
+
 def fetch_all_finmind(token, session):
     """
     以 1~2 次 API 請求批量下載所有台股近期日交易資料。
-    回傳 {stock_id: [row_dict, ...]} 已依日期排序的字典。
+    先以單一股票探測實際最新交易日，避免系統日期錯誤導致查詢未來日期報 400。
+    回傳 (stock_map, latest_date)：
+      stock_map   = {stock_id: [row_dict, ...]} 已依日期排序
+      latest_date = FinMind 最新可用交易日（datetime.date）
     """
-    today = datetime.date.today()
-    cur_month_start = today.replace(day=1)
+    latest_date = _probe_latest_trading_date(token, session)
+    cur_month_start = latest_date.replace(day=1)
     stock_map = {}
 
     def _fetch_period(start_date, end_date):
@@ -75,11 +106,11 @@ def fetch_all_finmind(token, session):
             raise Exception(f"FinMind API 回傳錯誤: {body.get('msg', '')}")
         return body.get("data", [])
 
-    # 本月資料（月初 ~ 今天）
-    for row in _fetch_period(cur_month_start, today):
+    # 本月資料（月初 ~ 實際最新交易日）
+    for row in _fetch_period(cur_month_start, latest_date):
         stock_map.setdefault(row["stock_id"], []).append(row)
 
-    # 月初交易日不足 20 天，補抓上個月（月初 ~ 月底）
+    # 月初交易日不足 20 天，補抓上個月
     sample_days = len(next(iter(stock_map.values()), []))
     if sample_days < 20:
         prev_end   = cur_month_start - datetime.timedelta(days=1)
@@ -90,7 +121,7 @@ def fetch_all_finmind(token, session):
     for sid in stock_map:
         stock_map[sid].sort(key=lambda r: r["date"])
 
-    return stock_map
+    return stock_map, latest_date
 
 
 def process_finmind_stock(stock_id, rows):

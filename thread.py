@@ -60,15 +60,17 @@ def _get_analyzed_codes_today(engine):
         return {row[0] for row in result}
 
 
-def upload_to_neon(all_stock_data):
+def upload_to_neon(all_stock_data, record_date=None):
     """將爬蟲資料轉換為平整格式並上傳至 Neon PostgreSQL。"""
     if not all_stock_data:
         return "沒有資料可上傳"
 
     print("正在準備上傳資料至 Neon 資料庫...")
 
-    tz_tw = datetime.timezone(datetime.timedelta(hours=8))
-    today = datetime.datetime.now(tz_tw).date()
+    if record_date is None:
+        tz_tw = datetime.timezone(datetime.timedelta(hours=8))
+        record_date = datetime.datetime.now(tz_tw).date()
+    today = record_date
 
     flat_data = []
     for stock in all_stock_data:
@@ -204,13 +206,13 @@ def crawler():
     with requests.Session() as session:
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         session.mount('https://', adapter)
-        stock_map = cr.fetch_all_finmind(finmind_token, session)
+        stock_map, latest_date = cr.fetch_all_finmind(finmind_token, session)
 
     total_stocks = len(stock_map)
     if total_stocks == 0:
-        return [], 0
+        return [], 0, None
 
-    print(f"收到 {total_stocks} 檔股票資料，計算技術指標中...")
+    print(f"收到 {total_stocks} 檔股票資料（最新交易日：{latest_date}），計算技術指標中...")
 
     results = []
     for stock_id, rows in stock_map.items():
@@ -219,7 +221,7 @@ def crawler():
             results.append(r)
 
     print(f"計算完成，共 {len(results)} 檔資料足夠。")
-    return results, total_stocks
+    return results, total_stocks, latest_date
 
 def run_crawler_pipeline():
     """
@@ -230,7 +232,7 @@ def run_crawler_pipeline():
     status_log = []
     try:
         # 1. 執行爬蟲
-        all_data, total_attempted = crawler()
+        all_data, total_attempted, latest_date = crawler()
 
         if total_attempted == 0:
             return "✅ 成功：今日資料已是最新，無需重新抓取。"
@@ -241,10 +243,10 @@ def run_crawler_pipeline():
                 "可能原因：① 今日為非交易日（週末/假日）② 交易所 API 封鎖此伺服器 IP"
             )
 
-        status_log.append(f"✅ 爬蟲成功，共抓取 {len(all_data)} / {total_attempted} 檔股票。")
+        status_log.append(f"✅ 爬蟲成功，最新交易日 {latest_date}，共 {len(all_data)} / {total_attempted} 檔。")
 
-        # 2. 上傳資料庫
-        upload_msg = upload_to_neon(all_data)
+        # 2. 上傳資料庫（使用 FinMind 探測到的實際交易日，而非系統日期）
+        upload_msg = upload_to_neon(all_data, record_date=latest_date)
         status_log.append(f"📤 {upload_msg}")
 
         return "\n".join(status_log)
@@ -259,7 +261,7 @@ def main():
     start_time = time.time()
     
     # 1. 執行爬蟲
-    all_data, total_attempted = crawler()
+    all_data, total_attempted, latest_date = crawler()
 
     if not all_data:
         print(f"沒有成功抓取到任何資料（嘗試 {total_attempted} 檔），程式結束。")
@@ -281,7 +283,7 @@ def main():
     # 4. (雲端上傳) 上傳至 Neon 資料庫
     # 如果是在本地測試且有設定好資料庫，這裡也會執行上傳
     print("嘗試上傳至資料庫...")
-    msg = upload_to_neon(all_data)
+    msg = upload_to_neon(all_data, record_date=latest_date)
     print(msg)
     
     end_time = time.time()
